@@ -18,7 +18,7 @@
 #   gene_only.npy       (3798, 200)
 #   image_only.npy      (3798, 256)
 #   concat_fused.npy    (3798, 456)
-#   gated_fused.npy     (3798, 456)
+#   gated_fused.npy     (3798, 128)
 
 import os
 import numpy as np
@@ -196,15 +196,14 @@ print(f"    mean={gates.mean():.3f}  std={gates.std():.3f}  "
 print(f"    (gate>0.5 = gene-dominant spots: {(gates>0.5).sum()}/"
       f"{len(gates)})")
 
-# Pad to 456d to match concat_fused dims for SEDR
-# SEDR input_dim must be consistent — we pad with zeros to 456d
-# so all conditions use the same SEDR architecture
-pad_size   = concat_fused.shape[1] - h_fused.shape[1]  # 456 - 128 = 328
-gated_fused = np.concatenate([
-    h_fused,
-    np.zeros((len(h_fused), pad_size), dtype=np.float32)
-], axis=1)
-print(f"\n    gated_fused (padded to 456d): {gated_fused.shape}")
+# Use the fused representation directly at its native 128d.
+# No zero-padding: SEDR builds its encoder as Linear(input_dim, hidden) from
+# X.shape[1] and is instantiated fresh per condition (see train_sedr.run_sedr_once),
+# so conditions do NOT need a shared input width. Padding to 456d only diluted the
+# reconstruction loss with 328 trivial zero dims, weakening the objective on the
+# 128 dims that actually carry signal.
+gated_fused = h_fused
+print(f"\n    gated_fused (native {gated_fused.shape[1]}d): {gated_fused.shape}")
 
 # ── Save all variants ──────────────────────────────────────────────
 print("\n[8] Saving feature arrays...")

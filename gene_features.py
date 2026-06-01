@@ -29,16 +29,30 @@ print("=" * 60)
 
 # ── Load Visium ────────────────────────────────────────────────────
 print("\n[1] Loading Visium data...")
-adata = sc.read_visium(path=BASE_DIR, count_file=H5_FILE)
+# load_images=False: this pipeline only needs counts + spot coordinates.
+# The tissue_hires/lowres PNG thumbnails (part of the 10x spatial tar.gz) are
+# not used here; histology features come from the full .tif in image_features.py.
+adata = sc.read_visium(path=BASE_DIR, count_file=H5_FILE, load_images=False)
 print(f"    Spots: {adata.n_obs}  Genes: {adata.n_vars}")
 
-# ── Save coordinates (pixel coords from spatial slot) ─────────────
+# ── Save coordinates (pixel coords from tissue_positions_list.csv) ─
+# Read directly from the positions file rather than adata.obsm["spatial"],
+# because read_visium(load_images=False) does not populate the spatial slot.
+# Columns (10x v1.1, no header): barcode, in_tissue, array_row, array_col,
+#                                pxl_row_in_fullres, pxl_col_in_fullres
+# scanpy's obsm["spatial"] convention is [pxl_col_in_fullres, pxl_row_in_fullres].
 print("\n[2] Saving spatial coordinates...")
-coords = pd.DataFrame(
-    adata.obsm["spatial"],
-    index=adata.obs_names,
-    columns=["x", "y"]
+pos = pd.read_csv(
+    os.path.join(BASE_DIR, "spatial", "tissue_positions_list.csv"),
+    header=None,
+    names=["barcode", "in_tissue", "array_row", "array_col",
+           "pxl_row_in_fullres", "pxl_col_in_fullres"],
+    index_col="barcode",
 )
+coords = pd.DataFrame({
+    "x": pos["pxl_col_in_fullres"],
+    "y": pos["pxl_row_in_fullres"],
+}).loc[adata.obs_names]
 coords.index.name = "barcode"
 coords.to_csv(os.path.join(PROC_DIR, "coords.csv"))
 print(f"    Saved coords.csv  shape={coords.shape}")
@@ -56,6 +70,9 @@ print(f"    annot_type distribution:")
 print(meta.loc[common, "annot_type"].value_counts().to_string())
 
 meta_aligned = meta.loc[common]
+# .loc with an intersected Index drops the index name, so re-assert it —
+# prepare_features.py reads this file with index_col="barcode".
+meta_aligned.index.name = "barcode"
 meta_aligned.to_csv(os.path.join(PROC_DIR, "labels.csv"))
 print(f"    Saved labels.csv")
 

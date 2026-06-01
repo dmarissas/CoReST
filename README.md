@@ -18,7 +18,11 @@ A lightweight gate network learns a per-spot weighting between the two modalitie
 
 ### Key finding
 
-Naive concatenation of gene and image features **hurts** performance (ARI 0.4470) compared to gene-only (ARI 0.4752). The proposed gated fusion resolves this by learning adaptive per-spot weights, achieving **ARI 0.4951 ± 0.0140** (gate seed=42, mean ± std over 5 SEDR seeds) — surpassing Seurat (0.4612) and matching STAGATE (0.4944) on the HBRC breast cancer benchmark, while additionally incorporating histological morphology that gene-only methods cannot access.
+Naive concatenation of gene and image features **hurts** performance (ARI 0.4445 ± 0.0092) compared to gene-only (ARI 0.4783 ± 0.0302). The proposed gated fusion **substantially recovers this loss** (ARI 0.4705 ± 0.0305), clearly outperforming naive concatenation — demonstrating that adaptive per-spot weighting is a better fusion strategy than equal-weight concatenation.
+
+However, on this benchmark the UNI histology features do **not** improve over gene expression alone: gene-only remains the strongest single condition (0.4783). In other words, gating is the better *way to combine* modalities, but the image modality adds limited domain-discriminative signal beyond gene expression for this breast-cancer section. This is consistent with the learned gate being near-constant (mean ≈ 0.52, std ≈ 0.02), i.e. only weakly per-spot adaptive.
+
+> Results are the mean ± std over 5 SEDR seeds with a fixed gate-network seed (42). All four conditions feed SEDR at their native feature width (gene 200d, image 256d, concat 456d, gated 128d).
 
 ---
 
@@ -28,16 +32,21 @@ Performance on HBRC Block A Section 1 (Xu et al. gold standard, 20 fine-grained 
 
 | Method | ARI (fine, k=20) |
 |--------|-----------------|
+| GateST — Image only (SEDR) | 0.2653 ± 0.0027 |
 | SEDR (published) | 0.3668 |
+| GateST — Concat fusion (SEDR) | 0.4445 ± 0.0092 |
 | Seurat | 0.4612 |
-| GateST — Gene only (SEDR) | 0.4752 ± 0.0061 |
-| GateST — Concat fusion (SEDR) | 0.4470 ± 0.0176 |
+| **GateST — Gated fusion (SEDR)** | **0.4705 ± 0.0305** |
+| GateST — Gene only (SEDR) | 0.4783 ± 0.0302 |
 | STAGATE | 0.4944 |
-| **GateST — Gated fusion (SEDR)** | **0.4951 ± 0.0140** |
 | TGR-NMF | 0.5286 |
 
 > Results reported as mean ± std over 5 SEDR random seeds with fixed gate network seed=42.
 > Published baselines (Seurat, STAGATE, TGR-NMF, SEDR) are single-run values with unknown seeds.
+>
+> **Takeaway:** gated fusion (0.4705) > concat fusion (0.4445) — adaptive gating beats naive
+> concatenation — but gene-only (0.4783) edges out gated fusion, so the histology modality does
+> not add domain-discriminative value beyond gene expression on this section.
 
 ### Visualizations
 
@@ -108,13 +117,13 @@ pip install -r requirements.txt
 
 This project uses the **10x Visium Human Breast Cancer Block A Section 1** dataset.
 
-**Download from 10x Genomics:**
-- [Filtered feature barcode matrix (.h5)](https://www.10xgenomics.com/resources/datasets/human-breast-cancer-block-a-section-1-1-standard-1-1-0)
-- High-resolution tissue image (.tif)
-- Spatial folder (tissue_positions_list.csv, scalefactors_json.json)
+**Download from 10x Genomics** ([dataset page](https://www.10xgenomics.com/resources/datasets/human-breast-cancer-block-a-section-1-1-standard-1-1-0)):
+- **Filtered feature barcode matrix (.h5)** — `V1_Breast_Cancer_Block_A_Section_1_filtered_feature_bc_matrix.h5`
+- **High-resolution tissue image (.tif)** — `V1_Breast_Cancer_Block_A_Section_1_image.tif`
+- **Spatial imaging data (.tar.gz)** — this archive contains the `spatial/` folder. Extract it and you will find `tissue_positions_list.csv` and `scalefactors_json.json` (among other files) inside.
 
 **Gold standard annotations:**
-- `metadata.tsv` from [Xu et al. 2022](https://doi.org/10.1038/s41592-022-01494-7) — 20 fine-grained spatial domain labels for Block A Section 1
+- `metadata.tsv` from the SEDR analyses repo — [JinmiaoChenLab/SEDR_analyses → data/BRCA1/metadata.tsv](https://github.com/JinmiaoChenLab/SEDR_analyses/blob/master/data/BRCA1/metadata.tsv) — providing the 20 fine-grained spatial domain labels for Block A Section 1 (originally from [Xu et al. 2022](https://doi.org/10.1038/s41592-022-01494-7)).
 
 Place data in the following structure:
 
@@ -151,6 +160,11 @@ python prepare_features.py
 # Step 4: Train SEDR on all conditions (~90 min, 5 seeds each)
 python train_sedr.py
 
+# Step 4b: Regenerate per-spot cluster assignments from the saved embeddings (~1 min)
+# REQUIRED before Step 5 — train_sedr.py saves only embeddings + ARI scores,
+# while visualize.py reads the clusters_<condition>_{k20,k4}.npy files produced here.
+python cluster_regeneration.py
+
 # Step 5: Generate all figures (~5 min)
 python visualize.py
 ```
@@ -165,8 +179,8 @@ GateST/
 ├── image_features.py       # Step 2: Multi-scale UNI image embedding
 ├── prepare_features.py     # Step 3: Gated fusion + all feature variants
 ├── train_sedr.py           # Step 4: SEDR training + ARI evaluation
+├── cluster_regeneration.py # Step 4b: Regenerate cluster files from embeddings (required for Step 5)
 ├── visualize.py            # Step 5: Figure generation
-├── cluster_regeneration.py # Regenerate cluster files from embeddings
 ├── SEDR_model.py           # SEDR model architecture (VAE + GNN)
 ├── graph_func.py           # Spatial graph construction
 ├── utils_func.py           # Preprocessing utilities
@@ -207,12 +221,13 @@ This encourages the model to genuinely leverage both modalities rather than igno
 A key finding of this work is that simply concatenating gene and image features reduces performance below gene-only:
 
 ```
-Gene only SEDR:    ARI 0.4752
-Concat SEDR:       ARI 0.4470  ← worse than gene only
-Gated SEDR:        ARI 0.4951  ← best
+Gene only SEDR:    ARI 0.4783  ← strongest single condition
+Gated SEDR:        ARI 0.4705  ← recovers most of the concat loss
+Concat SEDR:       ARI 0.4445  ← worse than gene only
+Image only SEDR:   ARI 0.2653  ← weak on its own
 ```
 
-Equal-weight concatenation dilutes the stronger gene expression signal with weaker image features. The gate network resolves this by learning to weight each modality appropriately per spot.
+Equal-weight concatenation dilutes the stronger gene-expression signal with the weaker image features. The gate network mitigates this by learning to down-weight the image modality, recovering most of the lost performance and clearly beating concatenation. It does not, however, exceed gene-only here — because the gate converges to a near-constant ~0.52 mix and the image features carry little domain-discriminative signal on this section, so any image contribution is on balance a slight dilution rather than a gain.
 
 ---
 
