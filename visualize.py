@@ -206,7 +206,12 @@ pred = np.load(cluster_path)
 axes[2].scatter(xy[:,0], xy[:,1], c=pred,
                 cmap=plt.cm.get_cmap("tab20", 20),
                 s=6, vmin=0, vmax=19, alpha=0.9)
-axes[2].set_title(f"Gated Fusion SEDR\n(k=20, ARI=0.4951)", fontsize=12)
+# Pull the gated_fused SEDR fine ARI from the results table so the label
+# never goes stale when the experiment is re-run.
+_g = df_ari[(df_ari["condition"] == "gated_fused") & (df_ari["model"] == "SEDR")]
+_g_mean = _g["ARI_fine_mean"].values[0]
+_g_std  = _g["ARI_fine_std"].values[0]
+axes[2].set_title(f"Gated Fusion SEDR\n(k=20, ARI={_g_mean:.4f} ± {_g_std:.4f})", fontsize=12)
 axes[2].set_aspect("equal")
 axes[2].axis("off")
 

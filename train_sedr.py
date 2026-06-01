@@ -5,7 +5,7 @@
 #   1. gene_only    — 200d  (published SEDR baseline)
 #   2. image_only   — 256d
 #   3. concat_fused — 456d  (naive z-score concatenation)
-#   4. gated_fused  — 456d  (adaptive gated fusion — novel)
+#   4. gated_fused  — 128d  (adaptive gated fusion — novel)
 #
 # Also runs KMeans-only baseline (no GNN) per condition
 # to isolate GNN contribution from feature quality contribution.
