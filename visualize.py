@@ -1,10 +1,15 @@
 # Generate all figures for the final presentation/paper.
 #
-# Figures produced:
-#   1. results_barplot.png       — ARI comparison bar chart (all conditions)
-#   2. spatial_clusters_<cond>.png — spatial map of predicted clusters per condition
-#   3. gate_map.png              — spatial map of gate values (gated fusion only)
-#   4. umap_embeddings.png       — UMAP of SEDR embeddings colored by gold standard
+# Reads the long-format results/ari_results.csv
+#   (condition, graph_mode, model, resolution, cluster_method, refine, ARI_mean, ...)
+# and the clusters_<cond>_{k20,k4}[_refined].npy produced by cluster_regeneration.py.
+#
+# Figures:
+#   1. results_barplot.png        — ARI per condition (SEDR/KMeans, raw vs refined)
+#   2. spatial_clusters_<k>.png   — predicted clusters per condition in space
+#   3. gold_standard_map.png      — gold standard (fine, 20 domains)
+#   4. comparison_map.png         — gold vs image-gated-graph prediction (the win)
+#   5. tsne_embeddings.png        — t-SNE of SEDR embeddings, colored by gold standard
 
 import os
 import numpy as np
@@ -13,7 +18,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import scanpy as sc
 from sklearn.manifold import TSNE
 
 # ── CONFIG ─────────────────────────────────────────────────────────
@@ -31,232 +35,183 @@ print("STEP 5: Visualization")
 print("=" * 60)
 
 # ── Load data ──────────────────────────────────────────────────────
-barcodes  = pd.read_csv(os.path.join(PROC_DIR, "barcodes_final.csv"))["barcode"].tolist()
-coords    = pd.read_csv(os.path.join(PROC_DIR, "coords_final.csv"), index_col="barcode")
-labels    = pd.read_csv(os.path.join(PROC_DIR, "labels_final.csv"), index_col="barcode")
-df_ari    = pd.read_csv(os.path.join(RESULT_DIR, "ari_results.csv"))
-gates     = np.load(os.path.join(PROC_DIR, "gates.npy"))
+barcodes = pd.read_csv(os.path.join(PROC_DIR, "barcodes_final.csv"))["barcode"].tolist()
+coords   = pd.read_csv(os.path.join(PROC_DIR, "coords_final.csv"), index_col="barcode")
+labels   = pd.read_csv(os.path.join(PROC_DIR, "labels_final.csv"), index_col="barcode")
+df_ari   = pd.read_csv(os.path.join(RESULT_DIR, "ari_results.csv"))
 
-xy = coords.loc[barcodes, ["x","y"]].values
+xy = coords.loc[barcodes, ["x", "y"]].values
 label_coarse = labels.loc[barcodes, "annot_type"].values
-label_fine  = labels.loc[barcodes, "fine_annot_type"].values
+label_fine   = labels.loc[barcodes, "fine_annot_type"].values
 unique_fine = sorted(np.unique(label_fine))
 fine_to_int = {l: i for i, l in enumerate(unique_fine)}
 fine_ints   = np.array([fine_to_int[l] for l in label_fine])
 cmap20      = plt.cm.get_cmap("tab20", len(unique_fine))
 
-# ── Figure 1: ARI bar chart ───────────────────────────────────────
-print("\n[1] Plotting ARI bar chart...")
-
-sedr_rows = df_ari[df_ari["model"] == "SEDR"]
-km_rows   = df_ari[df_ari["model"] == "KMeans"]
-
+conditions = ["gene_only", "image_only", "concat_fused", "gated_fused", "gene_imagegraph"]
 conditions_display = {
-    "gene_only":    "Gene only\n(200d)",
-    "image_only":   "Image only\n(256d)",
-    "concat_fused": "Concat\n(456d)",
-    "gated_fused":  "Gated\n(456d)",
+    "gene_only":       "Gene only\n(spatial)",
+    "image_only":      "Image only\n(spatial)",
+    "concat_fused":    "Concat\n(spatial)",
+    "gated_fused":     "Feature gate\n(spatial)",
+    "gene_imagegraph": "Image-gated\ngraph",
 }
 
-x      = np.arange(len(conditions_display))
-width  = 0.35
-colors = {"KMeans": "#95a5a6", "SEDR": "#2980b9"}
+PUBLISHED = {"Seurat": 0.4612, "SEDR": 0.3668, "STAGATE": 0.4944, "TGR-NMF": 0.5286}
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-for ax_idx, (label_type, title) in enumerate([
-    ("fine",   "Fine-grained ARI (k=20)"),
-    ("coarse", "Coarse ARI (k=4)"),
+def get_ari(cond, resolution, cluster_method="kmeans", refine="raw", model="SEDR"):
+    r = df_ari[(df_ari["condition"] == cond) & (df_ari["resolution"] == resolution) &
+               (df_ari["cluster_method"] == cluster_method) & (df_ari["refine"] == refine) &
+               (df_ari["model"] == model)]
+    if len(r) == 0:
+        return None, None
+    return float(r["ARI_mean"].values[0]), float(r["ARI_std"].values[0])
+
+
+# ── Figure 1: ARI bar chart (refined; KMeans vs GMM — shows the clusterer flip) ──
+print("\n[1] Plotting ARI bar chart...")
+x = np.arange(len(conditions))
+width = 0.38
+fig, axes = plt.subplots(1, 2, figsize=(16, 5.5))
+
+for ax_idx, (res, title, ylim) in enumerate([
+    ("fine",   "Fine-grained ARI (k=20)", 0.65),
+    ("coarse", "Coarse ARI (k=4)",        0.40),
 ]):
     ax = axes[ax_idx]
-    for mi, (model, rows_df) in enumerate([("KMeans", km_rows), ("SEDR", sedr_rows)]):
-        means, stds = [], []
-        for cond in conditions_display:
-            row = rows_df[rows_df["condition"].str.contains(cond)]
-            if len(row) == 0:
-                means.append(0); stds.append(0)
-                continue
-            means.append(row[f"ARI_{label_type}_mean"].values[0])
-            stds.append(row[f"ARI_{label_type}_std"].values[0])
-
-        offset = (mi - 0.5) * width
-        bars = ax.bar(x + offset, means, width, yerr=stds,
-                      capsize=4, label=model, color=colors[model],
-                      alpha=0.85, error_kw={"linewidth":1.5})
-
+    # Show both clusterers (refined) so the gene-vs-graph ranking flip is visible.
+    for bi, (method, color) in enumerate([("kmeans", "#95a5a6"), ("gmm", "#2980b9")]):
+        means = [get_ari(c, res, method, "refined")[0] or 0 for c in conditions]
+        stds  = [get_ari(c, res, method, "refined")[1] or 0 for c in conditions]
+        bars = ax.bar(x + (bi - 0.5) * width, means, width, yerr=stds, capsize=4,
+                      label=f"SEDR + {method.upper()} (refined)", color=color, alpha=0.9,
+                      error_kw={"linewidth": 1.3})
         for bar, m in zip(bars, means):
             if m > 0.01:
-                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
-                        f"{m:.3f}", ha="center", va="bottom", fontsize=8)
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.008,
+                        f"{m:.3f}", ha="center", va="bottom", fontsize=7.5)
 
-    # Published baselines
-    published = {"Seurat": 0.4612, "SEDR_pub": 0.3668,
-                 "STAGATE": 0.4944, "TGR-NMF": 0.5286}
-    colors_pub = ["#e74c3c", "#e67e22", "#9b59b6", "#27ae60"]
-    if label_type == "fine":
-        for (name, val), col in zip(published.items(), colors_pub):
-            ax.axhline(val, color=col, linestyle="--", linewidth=1.2,
-                       alpha=0.7, label=f"{name}={val:.4f}")
+    if res == "fine":
+        for (nm, val), col in zip(PUBLISHED.items(),
+                                  ["#e74c3c", "#e67e22", "#9b59b6", "#27ae60"]):
+            ax.axhline(val, color=col, linestyle="--", linewidth=1.2, alpha=0.7,
+                       label=f"{nm}={val:.4f}")
 
     ax.set_xticks(x)
-    ax.set_xticklabels(list(conditions_display.values()), fontsize=9)
-    ax.set_ylabel("ARI")
+    ax.set_xticklabels([conditions_display[c] for c in conditions], fontsize=8.5)
+    ax.set_ylabel("ARI (refined)")
     ax.set_title(title)
-    ax.legend(fontsize=8, loc="upper left")
+    ax.legend(fontsize=7.5, loc="upper left", ncol=1)
     ax.grid(axis="y", alpha=0.3)
-    # Change it to set different limits per subplot:
-    if label_type == "fine":
-        ax.set_ylim(0, 0.65)
-    else:
-        ax.set_ylim(0, 0.40)  # coarse ARI max is ~0.28, no need to go to 0.65
+    ax.set_ylim(0, ylim)
 
-plt.suptitle("ARI Comparison: KMeans vs SEDR across Feature Conditions\n"
-             "Error bars = ±1 std over 5 seeds", fontsize=11)
+plt.suptitle("Refined ARI across feature/graph conditions, KMeans vs GMM — ±1 std over 5 seeds\n"
+             "Feature fusion (concat/gate) < gene-only under both; image-gated graph ties gene-only "
+             "(wins KMeans, loses GMM)", fontsize=10.5)
 plt.tight_layout()
-out1 = os.path.join(FIG_DIR, "results_barplot.png")
-plt.savefig(out1, dpi=150, bbox_inches="tight")
+plt.savefig(os.path.join(FIG_DIR, "results_barplot.png"), dpi=150, bbox_inches="tight")
 plt.close()
-print(f"    Saved: results_barplot.png")
+print("    Saved: results_barplot.png")
 
-# ── Figure 2: Spatial cluster maps ───────────────────────────────
+# ── Figure 2: Spatial cluster maps (refined, all conditions) ───────
 print("\n[2] Plotting spatial cluster maps...")
-
-conditions = ["gene_only", "image_only", "concat_fused", "gated_fused"]
-label_types = ["k20", "k4"]
-
-for lt in label_types:
-    fig, axes = plt.subplots(1, 4, figsize=(24, 6))
+for lt in ["k20", "k4"]:
     n_clusters = 20 if lt == "k20" else 4
     cmap = plt.cm.get_cmap("tab20" if n_clusters > 10 else "Set1", n_clusters)
-
+    fig, axes = plt.subplots(1, len(conditions), figsize=(5*len(conditions), 6))
     for ci, cond in enumerate(conditions):
-        cluster_path = os.path.join(RESULT_DIR, f"clusters_{cond}_{lt}.npy")
-        if not os.path.exists(cluster_path):
+        # prefer refined clusters; fall back to raw
+        path = os.path.join(RESULT_DIR, f"clusters_{cond}_{lt}_refined.npy")
+        if not os.path.exists(path):
+            path = os.path.join(RESULT_DIR, f"clusters_{cond}_{lt}.npy")
+        if not os.path.exists(path):
             axes[ci].text(0.5, 0.5, "No data", ha="center", va="center",
                           transform=axes[ci].transAxes)
-            axes[ci].set_title(conditions_display.get(cond, cond))
+            axes[ci].set_title(conditions_display.get(cond, cond)); axes[ci].axis("off")
             continue
-
-        pred = np.load(cluster_path)
-        sc_plot = axes[ci].scatter(
-            xy[:, 0], xy[:, 1], c=pred, cmap=cmap,
-            s=6, vmin=0, vmax=n_clusters-1, alpha=0.9
-        )
+        pred = np.load(path)
+        axes[ci].scatter(xy[:, 0], xy[:, 1], c=pred, cmap=cmap, s=6,
+                         vmin=0, vmax=n_clusters-1, alpha=0.9)
         axes[ci].set_title(conditions_display.get(cond, cond), fontsize=11)
-        axes[ci].set_aspect("equal")
-        axes[ci].axis("off")
-
-    plt.suptitle(f"Predicted Spatial Clusters ({lt}) — SEDR", fontsize=13)
+        axes[ci].set_aspect("equal"); axes[ci].axis("off")
+    plt.suptitle(f"Predicted Spatial Clusters ({lt}, refined) — SEDR", fontsize=13)
     plt.tight_layout()
-    out2 = os.path.join(FIG_DIR, f"spatial_clusters_{lt}.png")
-    plt.savefig(out2, dpi=150, bbox_inches="tight")
+    plt.savefig(os.path.join(FIG_DIR, f"spatial_clusters_{lt}.png"), dpi=150, bbox_inches="tight")
     plt.close()
     print(f"    Saved: spatial_clusters_{lt}.png")
 
-# ── Figure 3: Gold standard label map ────────────────────────────
+# ── Figure 3: Gold standard fine map ───────────────────────────────
 print("\n[3] Plotting gold standard labels...")
-
-# Fine 20-class map — matches ARI evaluation
 fig, ax = plt.subplots(figsize=(8, 7))
-sc_plot = ax.scatter(xy[:,0], xy[:,1], c=fine_ints, cmap=cmap20,
-                     s=6, vmin=0, vmax=len(unique_fine)-1, alpha=0.9)
-patches = [mpatches.Patch(color=cmap20(i), label=l)
-           for i, l in enumerate(unique_fine)]
-ax.legend(handles=patches, fontsize=7, loc="upper right",
-          ncol=2, bbox_to_anchor=(1.35, 1.0))
+ax.scatter(xy[:, 0], xy[:, 1], c=fine_ints, cmap=cmap20, s=6,
+           vmin=0, vmax=len(unique_fine)-1, alpha=0.9)
+patches = [mpatches.Patch(color=cmap20(i), label=l) for i, l in enumerate(unique_fine)]
+ax.legend(handles=patches, fontsize=7, loc="upper right", ncol=2, bbox_to_anchor=(1.35, 1.0))
 ax.set_title("Gold Standard: fine_annot_type (Xu et al., 20 domains)", fontsize=12)
-ax.set_aspect("equal")
-ax.axis("off")
+ax.set_aspect("equal"); ax.axis("off")
 plt.tight_layout()
-out3 = os.path.join(FIG_DIR, "gold_standard_map.png")
-plt.savefig(out3, dpi=150, bbox_inches="tight")
+plt.savefig(os.path.join(FIG_DIR, "gold_standard_map.png"), dpi=150, bbox_inches="tight")
 plt.close()
-print(f"    Saved: gold_standard_map.png")
+print("    Saved: gold_standard_map.png")
 
-# ── Figure 4: Gated clusters vs Gold standard comparison ──────────
-print("\n[4] Plotting gated vs gold standard comparison...")
-
+# ── Figure 4: Gold vs image-gated-graph prediction (the win) ───────
+print("\n[4] Plotting image-gated-graph vs gold standard comparison...")
 fig, axes = plt.subplots(1, 3, figsize=(21, 6))
 
-# Panel 1: gold standard coarse (4 class) — visual reference
 unique_labels = sorted(np.unique(label_coarse))
-label_to_int  = {l: i for i, l in enumerate(unique_labels)}
-label_ints    = np.array([label_to_int[l] for l in label_coarse])
+label_ints = np.array([unique_labels.index(l) for l in label_coarse])
 cmap4 = plt.cm.get_cmap("Set2", len(unique_labels))
-
-axes[0].scatter(xy[:,0], xy[:,1], c=label_ints, cmap=cmap4,
-                s=6, vmin=0, vmax=len(unique_labels)-1, alpha=0.9)
-patches = [mpatches.Patch(color=cmap4(i), label=l)
-           for i, l in enumerate(unique_labels)]
-axes[0].legend(handles=patches, fontsize=9, loc="upper right")
+axes[0].scatter(xy[:, 0], xy[:, 1], c=label_ints, cmap=cmap4, s=6,
+                vmin=0, vmax=len(unique_labels)-1, alpha=0.9)
+axes[0].legend(handles=[mpatches.Patch(color=cmap4(i), label=l)
+                        for i, l in enumerate(unique_labels)], fontsize=9, loc="upper right")
 axes[0].set_title("Gold Standard\n(coarse, 4 classes)", fontsize=12)
-axes[0].set_aspect("equal")
-axes[0].axis("off")
+axes[0].set_aspect("equal"); axes[0].axis("off")
 
-# Panel 2: gold standard fine (20 class) — matches ARI
-axes[1].scatter(xy[:,0], xy[:,1], c=fine_ints, cmap=cmap20,
-                s=6, vmin=0, vmax=len(unique_fine)-1, alpha=0.9)
+axes[1].scatter(xy[:, 0], xy[:, 1], c=fine_ints, cmap=cmap20, s=6,
+                vmin=0, vmax=len(unique_fine)-1, alpha=0.9)
 axes[1].set_title("Gold Standard\n(fine, 20 domains)", fontsize=12)
-axes[1].set_aspect("equal")
-axes[1].axis("off")
+axes[1].set_aspect("equal"); axes[1].axis("off")
 
-# Panel 3: gated SEDR k=20 — matches ARI evaluation
-cluster_path = os.path.join(RESULT_DIR, "clusters_gated_fused_k20.npy")
-pred = np.load(cluster_path)
-axes[2].scatter(xy[:,0], xy[:,1], c=pred,
-                cmap=plt.cm.get_cmap("tab20", 20),
-                s=6, vmin=0, vmax=19, alpha=0.9)
-# Pull the gated_fused SEDR fine ARI from the results table so the label
-# never goes stale when the experiment is re-run.
-_g = df_ari[(df_ari["condition"] == "gated_fused") & (df_ari["model"] == "SEDR")]
-_g_mean = _g["ARI_fine_mean"].values[0]
-_g_std  = _g["ARI_fine_std"].values[0]
-axes[2].set_title(f"Gated Fusion SEDR\n(k=20, ARI={_g_mean:.4f} ± {_g_std:.4f})", fontsize=12)
-axes[2].set_aspect("equal")
-axes[2].axis("off")
+# winner: gene features on the image-gated graph (refined clusters), dynamic ARI label
+win = "gene_imagegraph"
+wpath = os.path.join(RESULT_DIR, f"clusters_{win}_k20_refined.npy")
+if not os.path.exists(wpath):
+    wpath = os.path.join(RESULT_DIR, f"clusters_{win}_k20.npy")
+pred = np.load(wpath)
+w_mean, w_std = get_ari(win, "fine", "kmeans", "refined")
+lbl = f"\n(k=20, refined ARI={w_mean:.4f} ± {w_std:.4f})" if w_mean else ""
+axes[2].scatter(xy[:, 0], xy[:, 1], c=pred, cmap=plt.cm.get_cmap("tab20", 20), s=6,
+                vmin=0, vmax=19, alpha=0.9)
+axes[2].set_title(f"Image-gated graph SEDR{lbl}", fontsize=12)
+axes[2].set_aspect("equal"); axes[2].axis("off")
 
-plt.suptitle("Gold Standard vs Gated Fusion Prediction", fontsize=13)
+plt.suptitle("Gold Standard vs Image-gated-graph Prediction", fontsize=13)
 plt.tight_layout()
-out4 = os.path.join(FIG_DIR, "comparison_map.png")
-plt.savefig(out4, dpi=150, bbox_inches="tight")
+plt.savefig(os.path.join(FIG_DIR, "comparison_map.png"), dpi=150, bbox_inches="tight")
 plt.close()
-print(f"    Saved: comparison_map.png")
+print("    Saved: comparison_map.png")
 
-# ── Figure 5: UMAP of SEDR embeddings ────────────────────────────
-print("\n[5] Plotting UMAP of SEDR embeddings...")
-fig, axes = plt.subplots(1, 4, figsize=(24, 6))
-
+# ── Figure 5: t-SNE of SEDR embeddings ─────────────────────────────
+print("\n[5] Plotting t-SNE of SEDR embeddings...")
+fig, axes = plt.subplots(1, len(conditions), figsize=(5*len(conditions), 6))
 for ci, cond in enumerate(conditions):
     emb_path = os.path.join(RESULT_DIR, f"embeddings_{cond}.npy")
     if not os.path.exists(emb_path):
         axes[ci].text(0.5, 0.5, "No data", ha="center", va="center",
-                      transform=axes[ci].transAxes)
+                      transform=axes[ci].transAxes); axes[ci].axis("off")
         continue
     emb = np.load(emb_path)
-
-    # t-SNE (faster than UMAP, no extra dependency)
-    tsne  = TSNE(n_components=2, random_state=42, perplexity=30)
-    proj  = tsne.fit_transform(emb)
-
-    axes[ci].scatter(proj[:,0], proj[:,1], c=fine_ints,
-                    cmap=cmap20, s=4, vmin=0, vmax=len(unique_fine)-1,
-                    alpha=0.7)
+    proj = TSNE(n_components=2, random_state=42, perplexity=30).fit_transform(emb)
+    axes[ci].scatter(proj[:, 0], proj[:, 1], c=fine_ints, cmap=cmap20, s=4,
+                     vmin=0, vmax=len(unique_fine)-1, alpha=0.7)
     axes[ci].set_title(conditions_display.get(cond, cond), fontsize=11)
     axes[ci].axis("off")
-
-plt.suptitle("t-SNE of SEDR Embeddings — colored by gold standard annot_type",
-             fontsize=13)
-
-patches = [mpatches.Patch(color=cmap20(i), label=l)
-           for i, l in enumerate(unique_fine)]
-fig.legend(handles=patches, fontsize=6, loc="lower center",
-           ncol=5, bbox_to_anchor=(0.5, -0.15))
-plt.subplots_adjust(bottom=0.25)
-
+plt.suptitle("t-SNE of SEDR Embeddings — colored by gold standard fine domains", fontsize=13)
 plt.tight_layout()
-out5 = os.path.join(FIG_DIR, "tsne_embeddings.png")
-plt.savefig(out5, dpi=150, bbox_inches="tight")
+plt.savefig(os.path.join(FIG_DIR, "tsne_embeddings.png"), dpi=150, bbox_inches="tight")
 plt.close()
-print(f"    Saved: tsne_embeddings.png")
+print("    Saved: tsne_embeddings.png")
 
 print(f"\nAll figures saved to: {FIG_DIR}")

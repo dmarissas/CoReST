@@ -138,6 +138,14 @@ for si, crop_px in enumerate(crop_sizes):
     if batch_p:
         embeddings[batch_i, sc:ec] = embed_batch(batch_p, uni_model, device, uni_transform)
 
+# Save the RAW multi-scale UNI embeddings (pre-normalization, pre-PCA) so the
+# image representation can be studied offline (per-scale, different PCA dims)
+# without re-running UNI extraction. Rows are in `pos` order = the same order as
+# image_features_256d.csv's barcode index. Columns: scale1[0:1024], scale2[1024:2048],
+# scale3[2048:3072].
+np.save(os.path.join(PROC_DIR, "image_features_raw3072.npy"), embeddings.astype(np.float32))
+print(f"\n[4b] Saved raw multi-scale embeddings: image_features_raw3072.npy {embeddings.shape}")
+
 # ── L2 normalize → PCA → L2 normalize ─────────────────────────────
 norms      = np.linalg.norm(embeddings, axis=1, keepdims=True).clip(1e-8)
 embeddings = embeddings / norms

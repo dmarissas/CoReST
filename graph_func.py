@@ -49,6 +49,28 @@ def generate_adj_mat_1(adata, max_dist):
     adj_mat = adj_mat.astype(np.int64)
     return adj_mat
 
+
+def generate_image_adj_mat(img_feats, k_img=6, metric='cosine'):
+    """KNN adjacency in histology (UNI-PCA) feature space.
+
+    Mirrors generate_adj_mat's convention: symmetric, no self-loops, 0/1.
+    Cosine is the right metric for UNI embeddings (directional). Used to make
+    the SEDR message-passing graph morphology-aware without touching node
+    features (the strong gene signal is never diluted).
+    """
+    from sklearn import metrics
+    dist = metrics.pairwise_distances(img_feats, metric=metric)
+    n = img_feats.shape[0]
+    adj_mat = np.zeros((n, n))
+    for i in range(n):
+        nn_idx = np.argsort(dist[i, :])[:k_img + 1]   # includes self
+        adj_mat[i, nn_idx] = 1
+    x, y = np.diag_indices_from(adj_mat)
+    adj_mat[x, y] = 0
+    adj_mat = adj_mat + adj_mat.T
+    adj_mat = (adj_mat > 0).astype(np.int64)
+    return adj_mat
+
 ##### normalze graph
 def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     """Convert a scipy sparse matrix to a torch sparse tensor."""
@@ -116,42 +138,94 @@ def graph_computing(pos, n):
     return adj
 
 
+def _finalize_graph_dict(A_norm, A_label):
+    """Build a SEDR graph_dict from two adjacency matrices.
+
+    A_norm  : adjacency used for MESSAGE PASSING (may be weighted / image-blended).
+    A_label : adjacency used for the self-supervision link-prediction TARGET —
+              kept spatial-only so the target is identical across conditions.
+
+    Both are (N, N) arrays/sparse without managed self-loops here; the
+    normalization math is byte-identical to the original graph_construction
+    (preprocess_graph adds I internally; adj_label gets +I; norm uses the
+    self-looped label sum).
+    """
+    A_norm = sp.coo_matrix(A_norm)
+    A_norm = A_norm - sp.dia_matrix((A_norm.diagonal()[np.newaxis, :], [0]), shape=A_norm.shape)
+    A_norm.eliminate_zeros()
+    adj_norm = preprocess_graph(A_norm)
+
+    A_label = sp.coo_matrix(A_label)
+    A_label = A_label - sp.dia_matrix((A_label.diagonal()[np.newaxis, :], [0]), shape=A_label.shape)
+    A_label.eliminate_zeros()
+    A_label = A_label + sp.eye(A_label.shape[0])
+    A_label = A_label.tocoo()
+    indices = np.stack([A_label.row, A_label.col])
+    adj_label = torch.sparse_coo_tensor(indices, A_label.data, A_label.shape)
+
+    n = A_label.shape[0]
+    norm_value = n * n / float((n * n - A_label.sum()) * 2)
+
+    return {
+        "adj_norm": adj_norm,
+        "adj_label": adj_label.coalesce(),
+        "norm_value": norm_value,
+    }
+
+
 def graph_construction(adata, n=6, dmax=50, mode='KNN'):
     if mode == 'KNN':
         adj_m1 = generate_adj_mat(adata, include_self=False, n=n)
         # adj_m1 = graph_computing(adata.obsm['spatial'], n=n)
     else:
         adj_m1 = generate_adj_mat_1(adata, dmax)
-    adj_m1 = sp.coo_matrix(adj_m1)
+    # Spatial-only: both message-passing and label target use the same graph.
+    return _finalize_graph_dict(adj_m1, adj_m1)
 
-    # Store original adjacency matrix (without diagonal entries) for later
-    adj_m1 = adj_m1 - sp.dia_matrix((adj_m1.diagonal()[np.newaxis, :], [0]), shape=adj_m1.shape)
-    adj_m1.eliminate_zeros()
 
-    # Some preprocessing
-    adj_norm_m1 = preprocess_graph(adj_m1)
-    adj_m1 = adj_m1 + sp.eye(adj_m1.shape[0])
-    # adj_label_m1 = torch.FloatTensor(adj_label_m1.toarray())
+def graph_construction_fused(adata, img_feats, n=6, mode_fuse='reweight',
+                             alpha=0.5, beta=0.3, k_img=6):
+    """Image-informed spatial graph (graph-level gate).
 
-    adj_m1 = adj_m1.tocoo()
-    shape = adj_m1.shape
-    values = adj_m1.data
-    indices = np.stack([adj_m1.row, adj_m1.col])
-    adj_label_m1 = torch.sparse_coo_tensor(indices, values, shape)
+    Histology enters via MESSAGE PASSING only; node features stay gene-only, so
+    the dominant reconstruction loss is never diluted by image noise (this is
+    why it can help where naive feature-concat hurt).
 
-    norm_m1 = adj_m1.shape[0] * adj_m1.shape[0] / float((adj_m1.shape[0] * adj_m1.shape[0] - adj_m1.sum()) * 2)
+    mode_fuse:
+      'spatial'   — baseline anchor (== graph_construction).
+      'reweight'  — keep spatial k=6 edges, scale each by a per-edge gate
+                    g_uv = beta + (1-beta)*sim_img(u,v) in [beta,1]. beta=1 == baseline.
+      'blend'     — A = alpha*A_spatial + (1-alpha)*A_image (global graph gate).
+                    alpha=1 == baseline.
+      'union'     — A = (A_spatial OR A_image).
+      'intersect' — A = (A_spatial AND A_image).
 
-    # # generate random mask
-    # adj_mask = mask_generator(adj_label_m1.to_sparse(), N)
+    The self-supervision target (adj_label) is ALWAYS the spatial graph, so only
+    smoothing topology changes across modes.
+    """
+    A_s = generate_adj_mat(adata, include_self=False, n=n).astype(np.float64)
 
-    graph_dict = {
-        "adj_norm": adj_norm_m1,
-        "adj_label": adj_label_m1.coalesce(),
-        "norm_value": norm_m1,
-        # "mask": adj_mask
-    }
+    if mode_fuse == 'spatial':
+        A_norm = A_s
+    elif mode_fuse == 'reweight':
+        from sklearn.metrics.pairwise import cosine_similarity
+        sim = cosine_similarity(img_feats)            # [-1, 1]
+        sim = np.clip(0.5 * (1.0 + sim), 0.0, 1.0)     # -> [0, 1]
+        A_norm = A_s * (beta + (1.0 - beta) * sim)     # gate edges already present
+    elif mode_fuse == 'blend':
+        A_i = generate_image_adj_mat(img_feats, k_img=k_img).astype(np.float64)
+        A_norm = alpha * A_s + (1.0 - alpha) * A_i
+    elif mode_fuse == 'union':
+        A_i = generate_image_adj_mat(img_feats, k_img=k_img)
+        A_norm = ((A_s + A_i) > 0).astype(np.float64)
+    elif mode_fuse == 'intersect':
+        A_i = generate_image_adj_mat(img_feats, k_img=k_img)
+        A_norm = (A_s.astype(bool) & A_i.astype(bool)).astype(np.float64)
+    else:
+        raise ValueError(f"Unknown mode_fuse: {mode_fuse!r}")
 
-    return graph_dict
+    # adj_label stays spatial-only (fixed link-prediction target across conditions)
+    return _finalize_graph_dict(A_norm, A_s)
 
 def block_diag_sparse(*arrs):
         bad_args = [k for k in range(len(arrs)) if not (isinstance(arrs[k], torch.Tensor) and arrs[k].ndim == 2)]

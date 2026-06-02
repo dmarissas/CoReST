@@ -52,6 +52,57 @@ def fix_seed(seed):
     torch.cuda.manual_seed_all(seed)
     cudnn.deterministic = True
     cudnn.benchmark = False
-    
+
     os.environ['PYTHONHASHSEED'] = str(seed)
     os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
+
+def cluster_latent(z, n_clusters, seed, method="kmeans"):
+    """Cluster a latent embedding `z` (N, d) into `n_clusters`.
+
+    method:
+      "kmeans" — KMeans with n_init = 2*n_clusters (the project default).
+      "gmm"    — GaussianMixture(covariance_type="full"), the dependency-free
+                 stand-in for R's mclust (full ~ mclust "VVV"), which is what
+                 SEDR/STAGATE papers use as their final clusterer.
+    Returns integer labels (N,).
+    """
+    from sklearn.cluster import KMeans
+    if method == "kmeans":
+        return KMeans(n_clusters=n_clusters, n_init=n_clusters * 2,
+                      random_state=seed).fit_predict(z)
+    elif method == "gmm":
+        from sklearn.mixture import GaussianMixture
+        return GaussianMixture(n_components=n_clusters, covariance_type="full",
+                               n_init=10, random_state=seed).fit_predict(z)
+    else:
+        raise ValueError(f"Unknown clustering method: {method!r}")
+
+
+def refine_labels(pred, coords, n_neigh=6, n_iter=1):
+    """Spatial label refinement (post-clustering smoothing).
+
+    Reassign each spot's cluster label to the majority label among its
+    `n_neigh` nearest spatial neighbours (self included). Ties keep the spot's
+    current label. This is the standard SEDR/STAGATE/DLPFC post-processing trick
+    and typically adds ~0.02-0.07 ARI. Uses ONLY the spatial coords, so when
+    applied across conditions it treats every condition identically.
+
+    pred   : (N,) integer cluster labels
+    coords : (N, 2) spatial pixel coordinates, row-aligned to pred
+    """
+    from sklearn.neighbors import NearestNeighbors
+    pred = np.asarray(pred).copy()
+    coords = np.asarray(coords)
+    # +1 because the first neighbour returned is the spot itself
+    nn = NearestNeighbors(n_neighbors=n_neigh + 1).fit(coords)
+    _, idx = nn.kneighbors(coords)  # (N, n_neigh+1), idx[:,0] == self
+    for _ in range(n_iter):
+        new = pred.copy()
+        for i in range(len(pred)):
+            vals, counts = np.unique(pred[idx[i]], return_counts=True)
+            winners = vals[counts == counts.max()]
+            # tie-break: keep current label if it is among the winners
+            new[i] = pred[i] if pred[i] in winners else winners[0]
+        pred = new
+    return pred

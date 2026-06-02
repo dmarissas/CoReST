@@ -14,15 +14,21 @@ Spatial transcriptomics methods typically rely on gene expression alone for tiss
 - **Gene expression features** — 200d PCA from 2000 highly variable genes (standard SEDR preprocessing)
 - **Histology image features** — multi-scale UNI embeddings (3×1024d → 256d PCA) from H&E-stained tissue patches
 
-A lightweight gate network learns a per-spot weighting between the two modalities, then feeds the fused representation into **SEDR** (Spatial Embedding by Deep learning with Regularization), a VAE + GNN model that exploits spatial neighborhood structure for unsupervised domain clustering.
+The fused representation feeds into **SEDR** (Spatial Embedding by Deep learning with Regularization), a VAE + GNN model that exploits spatial neighborhood structure for unsupervised domain clustering. GateST compares gating at two levels: a per-spot **feature-space gate**, and a per-edge **graph-level gate** that lets histology shape SEDR's spatial graph instead of its node features. The finding: *where* you fuse matters (feature fusion hurts, graph fusion doesn't), but the histology modality adds no robust accuracy gain over gene expression on this benchmark.
 
 ### Key finding
 
-Naive concatenation of gene and image features **hurts** performance (ARI 0.4445 ± 0.0092) compared to gene-only (ARI 0.4783 ± 0.0302). The proposed gated fusion **substantially recovers this loss** (ARI 0.4705 ± 0.0305), clearly outperforming naive concatenation — demonstrating that adaptive per-spot weighting is a better fusion strategy than equal-weight concatenation.
+**Where you fuse the modalities matters — but the histology modality adds no robust gain here.**
 
-However, on this benchmark the UNI histology features do **not** improve over gene expression alone: gene-only remains the strongest single condition (0.4783). In other words, gating is the better *way to combine* modalities, but the image modality adds limited domain-discriminative signal beyond gene expression for this breast-cancer section. This is consistent with the learned gate being near-constant (mean ≈ 0.52, std ≈ 0.02), i.e. only weakly per-spot adaptive.
+1. **In the feature space, histology hurts.** Naive concatenation of gene + image features falls below gene-only, and a learned per-spot *feature* gate, while better than concat, still does not reach gene-only. The weak, noisy image dimensions dilute SEDR's dominant reconstruction signal. This is robust across both clusterers (KMeans and GMM).
 
-> Results are the mean ± std over 5 SEDR seeds with a fixed gate-network seed (42). All four conditions feed SEDR at their native feature width (gene 200d, image 256d, concat 456d, gated 128d).
+2. **In the graph, histology is harmless — it ties gene-only.** Moving the gate to the **graph edges** (keep a spatial connection only when two spots are *also* morphologically similar — an **image-gated spatial graph**) keeps node features pure-gene, so nothing is diluted. This *recovers* gene-only performance, and the two are statistically tied: the image-gated graph **wins under KMeans** (refined ARI 0.5459 vs 0.5237) but is **marginally behind under the stronger GMM clusterer** (0.5711 vs 0.5746), a difference well within seed noise.
+
+**Honest bottom line:** on this single section, UNI histology provides **no robust improvement** over gene expression for tissue-domain identification, regardless of fusion strategy or clusterer. The contribution is methodological — *graph-level* fusion preserves the strong gene signal (does no harm) whereas *feature-level* fusion degrades it — plus an honest negative result on image utility.
+
+> The image-gated graph's KMeans-only edge is verified to be image content (not graph sparsity): a **density-matched** spatial graph scores only 0.5178, and a **shuffled-image** control collapses cluster quality (silhouette 0.288 → 0.237). But that edge does not survive switching to the stronger GMM clusterer, hence the "tie" conclusion.
+>
+> Results are mean ± std over 5 SEDR seeds. Spatial label refinement (KNN majority vote) and both clusterers are applied identically to every condition, so all comparisons are fair.
 
 ---
 
@@ -30,23 +36,45 @@ However, on this benchmark the UNI histology features do **not** improve over ge
 
 Performance on HBRC Block A Section 1 (Xu et al. gold standard, 20 fine-grained domains):
 
-| Method | ARI (fine, k=20) |
-|--------|-----------------|
-| GateST — Image only (SEDR) | 0.2653 ± 0.0027 |
-| SEDR (published) | 0.3668 |
-| GateST — Concat fusion (SEDR) | 0.4445 ± 0.0092 |
-| Seurat | 0.4612 |
-| **GateST — Gated fusion (SEDR)** | **0.4705 ± 0.0305** |
-| GateST — Gene only (SEDR) | 0.4783 ± 0.0302 |
-| STAGATE | 0.4944 |
-| TGR-NMF | 0.5286 |
+Fine-grained ARI (k=20), SEDR latent + spatial refinement, mean over 5 seeds. **Both clusterers are shown because the gene-vs-graph ranking flips between them.**
 
-> Results reported as mean ± std over 5 SEDR random seeds with fixed gate network seed=42.
-> Published baselines (Seurat, STAGATE, TGR-NMF, SEDR) are single-run values with unknown seeds.
->
-> **Takeaway:** gated fusion (0.4705) > concat fusion (0.4445) — adaptive gating beats naive
-> concatenation — but gene-only (0.4783) edges out gated fusion, so the histology modality does
-> not add domain-discriminative value beyond gene expression on this section.
+| Condition (features → graph) | KMeans (refined) | GMM (refined) |
+|--------|--------|--------|
+| Image only → spatial | 0.2745 | 0.3019 |
+| Concat fusion → spatial | 0.4687 | 0.5224 |
+| Feature gate → spatial | 0.5107 | 0.5363 |
+| Gene only → spatial | 0.5237 | **0.5746** |
+| **Gene → image-gated graph** | **0.5459** | 0.5711 |
+
+Published single-run baselines (clusterer / refinement unknown): SEDR 0.3668 · Seurat 0.4612 · STAGATE 0.4944 · TGR-NMF 0.5286.
+
+**Reading the table honestly:**
+- **Feature fusion (concat, feature-gate) stays below gene-only under *both* clusterers** — fusing in the feature space hurts. This is robust.
+- **The image-gated graph ties gene-only** — it wins under KMeans (+0.022) but is marginally behind under the stronger GMM clusterer (−0.004, within seed noise ≈ 0.02). So histology gives **no robust ARI gain** here.
+- Our refined+GMM numbers (≈0.57) are not directly comparable to the published single-run baselines (different pipelines); shown for rough context only.
+
+Controls (gene features fixed; only the graph changes) — these confirm the *KMeans-level* effect is genuine image content, even though it does not survive GMM:
+
+| Control | fine ARI (KMeans, refined) | reading |
+|---|---|---|
+| Image-gated graph (intersect) | 0.5459 | the effect |
+| Density-matched spatial graph (k=3, equal sparsity) | 0.5178 | rules out "just fewer edges" |
+| Shuffled-image graph | silhouette 0.237 (vs 0.288) | rules out artifact; image content matters |
+
+### Is the bottleneck the features or the modality?
+
+To check whether better image *features* could change the picture, we measured image-only ARI across representations built from the raw multi-scale UNI embeddings (different PCA dims; each scale alone). Image-only fine ARI (GMM, refined):
+
+| Image representation | GMM (refined) |
+|---|---|
+| all scales, PCA 256 (baseline) | 0.3143 |
+| all scales, PCA 512 | 0.3340 |
+| scale 1 (1×, cellular) | 0.2949 |
+| scale 2 (2×) | 0.3061 |
+| **scale 3 (3×, tissue-context)** | **0.3363** |
+| *(gene-only ceiling)* | *0.5746* |
+
+Every representation caps at **~0.30–0.34**, a ~0.24 gap below gene-only that no extraction choice closes. **The bottleneck is the modality, not the pipeline:** UNI histology lacks the fine-domain signal that gene expression carries on this section. (Two minor positives: the tissue-context scale (3×) carries more domain signal than the cellular scale (1×), as expected, and keeping more PCA dimensions helps marginally.)
 
 ### Visualizations
 
@@ -54,7 +82,7 @@ Performance on HBRC Block A Section 1 (Xu et al. gold standard, 20 fine-grained 
 
 ![Bar Plot](figures/results_barplot.png)
 
-**Gold standard tissue domains vs GateST gated fusion prediction:**
+**Gold standard tissue domains vs GateST image-gated-graph prediction:**
 
 ![Comparison Map](figures/comparison_map.png)
 
@@ -77,14 +105,16 @@ Step 1: Gene feature extraction
 Step 2: Image feature extraction
   └── H&E TIFF → UNI (multi-scale 3×1024d) → PCA 256d
 
-Step 3: Feature fusion
+Step 3: Feature variants
   ├── gene_only      (200d) — baseline
   ├── image_only     (256d) — ablation
   ├── concat_fused   (456d) — naive z-score concatenation
-  └── gated_fused    (456d) — learned adaptive gate (novel)
+  └── gated_fused    (128d) — learned feature-space gate
 
 Step 4: SEDR training + evaluation
-  └── Spatial k=6 KNN graph → VAE + GNN → KMeans → ARI vs gold standard
+  ├── spatial k=6 KNN graph → VAE + GNN → {KMeans, GMM} → refine → ARI
+  └── gene → IMAGE-GATED graph (intersect of spatial-KNN & image-KNN)  ← main result
+      (controls: density-matched spatial-k, shuffled-image — see experiment_graph.py)
 
 Step 5: Visualization
   └── Bar plots, spatial cluster maps, comparison map, t-SNE
@@ -178,56 +208,59 @@ GateST/
 ├── gene_features.py        # Step 1: Gene PCA extraction + labels + coords
 ├── image_features.py       # Step 2: Multi-scale UNI image embedding
 ├── prepare_features.py     # Step 3: Gated fusion + all feature variants
-├── train_sedr.py           # Step 4: SEDR training + ARI evaluation
+├── train_sedr.py           # Step 4: SEDR training + ARI eval (incl. image-gated graph)
 ├── cluster_regeneration.py # Step 4b: Regenerate cluster files from embeddings (required for Step 5)
 ├── visualize.py            # Step 5: Figure generation
-├── SEDR_model.py           # SEDR model architecture (VAE + GNN)
-├── graph_func.py           # Spatial graph construction
-├── utils_func.py           # Preprocessing utilities
+├── experiment_graph.py     # Image-gated-graph experiment + controls (density-matched, shuffle)
+├── image_feature_study.py  # Diagnostic: image-only ARI by representation (per-scale, PCA dims)
+├── SEDR_model.py           # SEDR training loop (VAE + GNN wrapper)
+├── graph_func.py           # Spatial + image-gated graph construction
+├── utils_func.py           # Preprocessing, clustering (KMeans/GMM), spatial refinement
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Gated Fusion
+## Two gating mechanisms
 
-The core contribution is a lightweight gate network trained in `prepare_features.py`:
+**(A) Feature-space gate** (`prepare_features.py`) — a per-spot scalar gate that mixes the two modalities *before* SEDR:
 
 ```python
-# For each spot, compute a scalar gate g ∈ (0,1)
-g = sigmoid(W_gate * concat([gene_features, image_features]))
-
-# Project each modality to shared space
-h_gene  = ReLU(W_gene  * gene_features)
-h_image = ReLU(W_image * image_features)
-
-# Adaptive weighted combination
+g = sigmoid(W_gate * concat([gene_features, image_features]))   # per-spot gate in (0,1)
+h_gene, h_image = ReLU(W_gene * gene), ReLU(W_image * image)
 h_fused = g * h_gene + (1 - g) * h_image
+loss    = recon_gene + 0.5 * recon_image - 0.3 * entropy(g)
 ```
 
-The gate is trained by minimizing reconstruction loss for **both** modalities simultaneously, with entropy regularization to prevent gate collapse:
+This recovers most of the concatenation loss but does not beat gene-only — the gate collapses to a near-constant ~0.52, and the image still enters SEDR's reconstruction target where it dilutes the gene signal.
 
-```
-loss = recon_gene + 0.5 * recon_image - 0.3 * entropy(g)
+**(B) Graph-level gate** (`graph_func.py`, `graph_construction_fused`) — **the main result.** Instead of mixing *features*, the gate acts on the *edges* of SEDR's spatial graph. A spatial connection is kept only when the two spots are also morphologically similar in UNI-embedding space:
+
+```python
+# per-edge gate: keep edge (u,v) iff spots are spatial neighbours AND look alike
+A_fused[u, v] = A_spatial[u, v]  AND  A_image_knn[u, v]      # "intersect" mode
+# node features fed to SEDR stay PURE GENE — never diluted by image noise
 ```
 
-This encourages the model to genuinely leverage both modalities rather than ignoring one.
+Because histology only reshapes *which spots smooth toward each other* (not what they contain), it adds boundary information without harming the strong gene signal — and beats gene-only (see Results).
 
 ---
 
-## Why Naive Concatenation Hurts
+## Why feature fusion hurts but graph fusion doesn't
 
-A key finding of this work is that simply concatenating gene and image features reduces performance below gene-only:
+Feature-space fusion drags performance below gene-only; graph-level fusion instead *preserves* it (a statistical tie). Fine-grained refined ARI:
 
 ```
-Gene only SEDR:    ARI 0.4783  ← strongest single condition
-Gated SEDR:        ARI 0.4705  ← recovers most of the concat loss
-Concat SEDR:       ARI 0.4445  ← worse than gene only
-Image only SEDR:   ARI 0.2653  ← weak on its own
+                                   KMeans   GMM
+Image only   → spatial graph:      0.2745   0.3019   ← weak on its own
+Concat        → spatial graph:     0.4687   0.5224   ← gluing features HURTS
+Feature gate  → spatial graph:     0.5107   0.5363   ← still < gene-only
+Gene only     → spatial graph:     0.5237   0.5746   ← strong baseline
+Gene          → image-gated graph: 0.5459   0.5711   ← ties gene-only (wins KMeans, loses GMM)
 ```
 
-Equal-weight concatenation dilutes the stronger gene-expression signal with the weaker image features. The gate network mitigates this by learning to down-weight the image modality, recovering most of the lost performance and clearly beating concatenation. It does not, however, exceed gene-only here — because the gate converges to a near-constant ~0.52 mix and the image features carry little domain-discriminative signal on this section, so any image contribution is on balance a slight dilution rather than a gain.
+The reason: SEDR's reconstruction loss (`rec_w=10`) dominates training. Putting image *features* into the input forces SEDR to reconstruct 256 noisy image dimensions, diluting genes (concat/feature-gate fall below gene-only). Putting image into the *graph* leaves the reconstruction target pure-gene and only changes message passing — so it does no harm and matches gene-only. But the extra morphological signal is not strong enough to *beat* gene expression once a capable clusterer (GMM) is used: the histology modality carries little domain-discriminative information beyond genes on this section.
 
 ---
 
@@ -236,6 +269,16 @@ Equal-weight concatenation dilutes the stronger gene-expression signal with the 
 - Gate network seed: `torch.manual_seed(42)` in `prepare_features.py`
 - SEDR evaluation: 5 seeds [42, 123, 456, 789, 1234], mean ± std reported
 - All other steps are deterministic
+
+---
+
+## Limitations & honest scope
+
+- **Single tissue section.** All results are on HBRC Block A Section 1. The findings (feature fusion hurts, graph fusion ties, image adds no robust gain) are demonstrated here only and may not transfer to other tissues where morphology is more domain-discriminative.
+- **The headline is a negative/methods result, not a state-of-the-art claim.** GateST does *not* beat gene-only by adding histology; its contribution is the controlled finding that *where* you fuse matters, plus evidence that the UNI image modality lacks fine-domain signal beyond genes on this section.
+- **Clusterer dependence.** The image-gated graph's small edge appears under KMeans but not under GMM; we report both and conclude a tie. Single-clusterer reporting would have been misleading.
+- **Refinement comparability.** Our refined numbers are not directly comparable to published single-run baselines whose post-processing is unknown.
+- **One foundation model.** Only UNI was tested. A different pathology encoder (CONCH, Virchow, GigaPath) might carry more signal, but the ~0.24 ARI gap to gene-only makes a reversal unlikely.
 
 ---
 
