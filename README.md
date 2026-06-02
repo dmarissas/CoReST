@@ -113,7 +113,7 @@ Step 3: Feature variants
 
 Step 4: SEDR training + evaluation
   ├── spatial k=6 KNN graph → VAE + GNN → {KMeans, GMM} → refine → ARI
-  └── gene → IMAGE-GATED graph (intersect of spatial-KNN & image-KNN)  ← main result
+  └── gene → IMAGE-GATED graph (intersect of spatial-KNN & image-KNN)  ← graph-level fusion
       (controls: density-matched spatial-k, shuffled-image — see experiment_graph.py)
 
 Step 5: Visualization
@@ -187,7 +187,8 @@ python image_features.py
 # Step 3: Compute all fusion variants + train gate network (~5 min)
 python prepare_features.py
 
-# Step 4: Train SEDR on all conditions (~90 min, 5 seeds each)
+# Step 4: Train SEDR on all conditions (~10-12 min: 5 conditions x 5 seeds x 2
+# resolutions, evaluated with KMeans+GMM, raw+refined)
 python train_sedr.py
 
 # Step 4b: Regenerate per-spot cluster assignments from the saved embeddings (~1 min)
@@ -198,6 +199,47 @@ python cluster_regeneration.py
 # Step 5: Generate all figures (~5 min)
 python visualize.py
 ```
+
+---
+
+## Experiments & Ablations
+
+Beyond the 5-step pipeline, the repo includes the experiment/ablation scripts that produced the results and controls in this README. Run them in the `GateST` environment after Steps 1–3 have populated `processed/`.
+
+### Main comparison — `train_sedr.py`
+```bash
+python train_sedr.py        # ~10-12 min
+```
+Trains SEDR for **5 conditions** — `gene_only`, `image_only`, `concat_fused`, `gated_fused` (spatial graph), and `gene_imagegraph` (gene features on the **image-gated** "intersect" graph) — and evaluates each with **{KMeans, GMM} × {raw, refined}** over 5 seeds. Builds both the spatial (k=6 KNN) and image-gated graphs internally.
+**Output:** `results/ari_results.csv` (long format: `condition, graph_mode, model, resolution, cluster_method, refine, ARI_mean, ARI_std, n_seeds`). **Read:** compare each condition's `cluster_method` × `refine` cells (this is the source of the Results table — feature fusion < gene-only; image-gated graph ties gene-only).
+
+### Re-cluster saved embeddings — `cluster_regeneration.py`
+```bash
+python cluster_regeneration.py
+```
+Re-clusters the saved `embeddings_<cond>.npy` with KMeans **and** GMM, raw **and** refined (spatial KNN majority vote). **Required before `visualize.py`** (it writes the `clusters_<cond>_{k20,k4}[_refined].npy` the figures read). **Output:** `results/cluster_regeneration_ari.csv` (per-condition raw vs refined, KMeans vs GMM).
+
+### Image-gated-graph study + controls — `experiment_graph.py`
+```bash
+python experiment_graph.py  # ~6 min
+```
+Holds node features = gene_only and varies only the SEDR **graph**. Modes: `spatial` (baseline anchor — must reproduce gene-only), `reweight_b*`, `blend_a*`, `union`, `intersect`, plus the **controls**: density-matched `spatial_k3/k4/k5` (no image) and `intersect_SHUFFLE` (scrambled image), with a paired per-seed comparison.
+**Output:** `results/graph_experiment_ari.csv` + `graph_experiment_perseed.csv`.
+**How to read the verdict:** compare `intersect` to the **same-density** `spatial_kN` (≈ deg 4.4 → `spatial_k3`) — if `intersect` beats it, the *image edge-selection* helps (not just sparsity); the `intersect_SHUFFLE` silhouette collapse (0.288→0.237) confirms it's image *content*. Note this effect appears under KMeans but does not survive GMM (see Results).
+
+### Image-representation diagnostic — `image_feature_study.py`
+```bash
+python image_features.py        # re-run once: also saves image_features_raw3072.npy
+python image_feature_study.py   # ~6 min
+```
+Tests whether *better image features* would change the conclusion: builds image-only representations from the raw UNI embeddings (PCA dims {128, 256, 512} and each scale {1×, 2×, 3×} alone) and reports image-only fine ARI (KMeans + GMM, refined).
+**Output:** `results/image_feature_study.csv`. **Read:** every representation caps at ~0.30–0.34 vs gene-only's ~0.57 — the evidence that the limit is the **modality, not the features** (tissue-context 3× > cellular 1× is a minor positive).
+
+### Figures — `visualize.py`
+```bash
+python visualize.py
+```
+**Output (`figures/`):** `results_barplot.png` (bar chart, **KMeans vs GMM** so the clusterer-dependent ranking is visible), `comparison_map.png` (gold vs image-gated-graph), `spatial_clusters_{k20,k4}.png`, `gold_standard_map.png`, `tsne_embeddings.png`.
 
 ---
 
@@ -235,7 +277,7 @@ loss    = recon_gene + 0.5 * recon_image - 0.3 * entropy(g)
 
 This recovers most of the concatenation loss but does not beat gene-only — the gate collapses to a near-constant ~0.52, and the image still enters SEDR's reconstruction target where it dilutes the gene signal.
 
-**(B) Graph-level gate** (`graph_func.py`, `graph_construction_fused`) — **the main result.** Instead of mixing *features*, the gate acts on the *edges* of SEDR's spatial graph. A spatial connection is kept only when the two spots are also morphologically similar in UNI-embedding space:
+**(B) Graph-level gate** (`graph_func.py`, `graph_construction_fused`) — **the better-behaved fusion.** Instead of mixing *features*, the gate acts on the *edges* of SEDR's spatial graph. A spatial connection is kept only when the two spots are also morphologically similar in UNI-embedding space:
 
 ```python
 # per-edge gate: keep edge (u,v) iff spots are spatial neighbours AND look alike
@@ -243,7 +285,7 @@ A_fused[u, v] = A_spatial[u, v]  AND  A_image_knn[u, v]      # "intersect" mode
 # node features fed to SEDR stay PURE GENE — never diluted by image noise
 ```
 
-Because histology only reshapes *which spots smooth toward each other* (not what they contain), it adds boundary information without harming the strong gene signal — and beats gene-only (see Results).
+Because histology only reshapes *which spots smooth toward each other* (not what they contain), it adds morphological information without harming the strong gene signal — so it *ties* gene-only rather than degrading it like feature fusion does (see Results; the small KMeans-level edge does not survive GMM).
 
 ---
 
