@@ -3,7 +3,16 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Gated fusion of UNI histology image features and gene expression for spatial tissue domain identification in breast cancer Visium data.
+> Spatial tissue-domain identification on breast-cancer Visium data — two honest studies: (1) gated multimodal fusion of UNI histology + gene expression, and (2) a consensus/robustness method that removes SEDR's random-seed lottery.
+
+---
+
+## Two studies in this repo
+
+Two connected investigations on the same SEDR pipeline and dataset:
+
+- **Part 1 — Gated multimodal fusion** *(histology + genes)* — an **honest negative**: *where* you fuse matters (feature fusion hurts, graph fusion ties), but UNI histology adds **no robust gain** over genes on this section. → [Overview](#overview), [Results](#results).
+- **Part 2 — Consensus / robustness** *(current direction)* — a deterministic cross-seed + cross-method **consensus** of SEDR embeddings that **removes the random-seed lottery**: it reliably lands *at or above* its pool's best single seed (replicated on an independent seed pool), giving one reproducible answer of **~0.61–0.65 ARI**. Honest scope: this is **seed-insurance / variance reduction**, not a significant ARI gain (the margin over the best single seed is within seed noise) and the absolute number is pool-dependent. → [Part 2 — Consensus / Robustness](#part-2--consensus--robustness).
 
 ---
 
@@ -200,6 +209,12 @@ python cluster_regeneration.py
 python visualize.py
 ```
 
+> **Part 2 (Consensus / Robustness)** has its own entry point, independent of Steps 4b–5:
+> ```bash
+> python run_consensus.py     # ~6 min first run; ~1 min on reruns (embeddings cached)
+> ```
+> See the [Consensus / Robustness](#part-2--consensus--robustness) section below.
+
 ---
 
 ## Experiments & Ablations
@@ -241,6 +256,26 @@ python visualize.py
 ```
 **Output (`figures/`):** `results_barplot.png` (bar chart, **KMeans vs GMM** so the clusterer-dependent ranking is visible), `comparison_map.png` (gold vs image-gated-graph), `spatial_clusters_{k20,k4}.png`, `gold_standard_map.png`, `tsne_embeddings.png`.
 
+### Consensus / robustness — `run_consensus.py` (Part 2)
+```bash
+python run_consensus.py     # ~6 min first run; ~1 min on reruns (embeddings cached)
+```
+Builds 15 base partitions (5 seeds × {KMeans, GMM, Leiden} of the gene-only SEDR embedding), the co-association matrix, and the 4 consensus variants; then runs the robustness checks (leave-one-seed-out, bootstrap, all 3/4-seed subsets), the per-spot stability map, and the **source-of-gain ablations** (clusterer-alone / cross-method-only / cross-seed-only + an identity check). Picks the headline variant by a label-free silhouette criterion. Caches per-seed embeddings (`embeddings_consensus_gene_seed*_fine.npy`) so reruns skip SEDR training. Needs `leidenalg`+`igraph` (falls back to KMeans+GMM if missing); the consensus math also has a standalone self-test: `python consensus_func.py`.
+**Output:** `results/consensus_ari.csv` (long format: single-seed / consensus variants / LOSO / bootstrap / seed-subset / ablations), `consensus_perseed.csv`, `stability_consensus.npy`. **Read:** the printed **VERDICT** block — consensus reliably lands at/above the pool's best single seed (deterministic seed-insurance); cross-seed pooling is the driver; the twists are honest negatives. (Absolute ARI is pool-dependent — see `consensus_seed_replication.py` and Part 2.)
+
+### Seed-pool replication — `consensus_seed_replication.py` (Part 2)
+```bash
+python consensus_seed_replication.py    # trains 5 NEW seeds (~5-6 min GPU); pools A / A+B reuse cache
+```
+The key robustness ablation: rebuilds the consensus on a **disjoint** seed pool B `{7,88,314,2024,51966}` and on the 10-seed A+B, and compares to the original pool A. This is what revealed **0.6504 is a lucky pool** (pool B → 0.6202; 10-seed → 0.6132; ~0.61 typical) and reframed the result as *seed-insurance*. **Output:** `results/consensus_seed_replication.csv`. **Read:** the `|consensus_A − consensus_B|` replication check and each pool's `consensus_minus_best`.
+
+### Part-2 + ablation figures — `visualize_consensus.py`, `visualize_ablations.py`
+```bash
+python visualize_ablations.py    # graph_experiment.png, image_feature_study.png   (Part 1 ablations)
+python visualize_consensus.py    # consensus_vs_lottery.png, consensus_gain.png, consensus_spatial.png   (Part 2)
+```
+Both read **only saved CSVs / `.npy`** (no retraining). `visualize_ablations.py` turns the graph-experiment and image-study tables into figures; `visualize_consensus.py` plots the seed-lottery scatter, the gain decomposition, and the per-spot stability map. **Output:** the five PNGs above in `figures/`.
+
 ---
 
 ## Project Structure
@@ -255,6 +290,11 @@ GateST/
 ├── visualize.py            # Step 5: Figure generation
 ├── experiment_graph.py     # Image-gated-graph experiment + controls (density-matched, shuffle)
 ├── image_feature_study.py  # Diagnostic: image-only ARI by representation (per-scale, PCA dims)
+├── consensus_func.py       # Part 2: pure co-association / consensus / stability functions (+ self-test)
+├── run_consensus.py        # Part 2: consensus driver (base partitions → co-association → variants → ablations)
+├── consensus_seed_replication.py # Part 2: seed-pool ablation (disjoint pool B + A∪B) — showed 0.6504 was a lucky pool
+├── visualize_consensus.py  # Part 2 figures (seed-lottery scatter, gain decomposition, stability map)
+├── visualize_ablations.py  # Part 1 ablation figures (graph experiment, image-representation study)
 ├── SEDR_model.py           # SEDR training loop (VAE + GNN wrapper)
 ├── graph_func.py           # Spatial + image-gated graph construction
 ├── utils_func.py           # Preprocessing, clustering (KMeans/GMM), spatial refinement
@@ -306,6 +346,96 @@ The reason: SEDR's reconstruction loss (`rec_w=10`) dominates training. Putting 
 
 ---
 
+## Part 2 — Consensus / Robustness
+
+> **Different question.** Part 1 asked *"can histology help?"* (no). Part 2 asks: *can we remove SEDR's random-seed lottery and get one reproducible answer that is reliably as good as the best single run?* (yes — and note "as good as," not "better than"; see [Seed-pool replication](#seed-pool-replication) for why.)
+
+### The gap
+
+SEDR is **seed-sensitive** — the same model on the same data swings fine ARI by ~0.06 across random seeds (gene-only, GMM, refined):
+
+| Seed | 42 | 123 | 456 | 789 | 1234 |
+|---|---|---|---|---|---|
+| ARI | 0.6052 | 0.5684 | 0.5819 | 0.5429 | 0.5743 |
+
+A practitioner who runs **once** gets a random draw. We remove that lottery with **partition-level consensus** (evidence-accumulation clustering, Fred & Jain 2005 — *applied* here, not reinvented).
+
+### Method
+
+Base partitions = **5 seeds × {KMeans, GMM, Leiden}** of the gene-only SEDR embedding (32d; gene features + spatial graph; **no histology**) → 15 partitions → a **co-association matrix** `C` (how often each spot-pair is grouped together) → deterministic **average-linkage** cut at k=gold. Averaging *agreements* is valid where averaging *embeddings* is not (each seed's latent axes are arbitrary; co-grouping is frame-invariant). Files: `consensus_func.py` (pure functions + self-test), `run_consensus.py` (driver).
+
+### Results (fine k=20, refined ARI)
+
+| Approach | ARI | vs best single seed (0.6052) |
+|---|---|---|
+| Typical single run (GMM mean) | 0.5745 ± 0.0202 | — |
+| Best of all 15 single-seed runs | 0.6052 | — |
+| **Plain consensus** | **0.6504** | **+0.045** (deterministic) |
+| consensus + quality weight | 0.6405 | twist — *below* plain |
+| consensus + spatial reg. | 0.6383 | twist — *below* plain |
+| consensus + both (pre-reg. headline) | 0.6355 | twist — *below* plain |
+
+The consensus lands **at or above the luckiest of 15** single-seed runs and is **deterministic** (same answer every run). ⚠️ **But 0.6504 is pool-dependent — do not read it as "the number."** On an independent seed pool the consensus is 0.6202, and the honest point estimate is the 10-seed value **0.6132**; the margin over the best single seed is within seed noise. See [Seed-pool replication](#seed-pool-replication) below — the honest claim is *variance reduction*, not a meaningful ARI gain.
+
+### Where the gain comes from (ablations)
+
+| Source | ARI | adds |
+|---|---|---|
+| Ward agglomerative on one embedding (clusterer alone) | 0.5518 ± 0.0349 | nothing special (≈ a single run) |
+| Typical GMM run | 0.5745 | — |
+| Cross-method only (1 seed, 3 styles) | 0.5843 ± 0.0209 | +0.010 |
+| **Cross-seed only (5 seeds, GMM)** | **0.6294** | **+0.055 ← primary driver** |
+| Full plain consensus | 0.6504 | +0.021 more |
+
+An **identity check** confirms the consensus operator returns a single partition unchanged (ARI 1.0) — so any gain is attributable purely to *pooling*, not to the clusterer.
+
+### Robustness — does the answer depend on *which* seeds?
+
+- **Determinism:** consensus is one fixed answer (rerun std = 0; a single seed has std ~0.02).
+- **Leave-one-seed-out:** the worst 4-seed consensus, **0.6190, still beats the best single seed (0.6052)**.
+- **Seed-subsets:** across all 3- and 4-seed combinations, **13/15 beat the best single seed** (mean 0.6212 ± 0.0221).
+- **Stress test (bootstrap, can drop a whole clusterer):** worst case 0.5562 dips below the GMM mean — robust to *seed choice*, **not** to shrinking the ensemble. Reported honestly.
+
+### Seed-pool replication
+
+The strongest robustness test: retrain SEDR on a **disjoint** set of 5 seeds and rebuild the consensus (`consensus_seed_replication.py`). *Does a different seed pool also land at ~0.65?*
+
+| Pool | seeds | consensus ARI | best single seed |
+|---|---|---|---|
+| A (original) | 42,123,456,789,1234 | 0.6504 | 0.6052 |
+| B (independent) | 7,88,314,2024,51966 | 0.6202 | 0.5852 |
+| A+B (10 seeds) | all ten | 0.6132 | 0.6052 |
+
+What this revealed (verified by a diagnostic workflow):
+- **0.6504 was a lucky draw.** Enumerating *all 252* five-seed subsets of the ten seeds gives mean **0.6059 ± 0.024** (range 0.556–0.653); pool A's 0.6504 is the **98th percentile** (5th of 252). The honest point estimate is the 10-seed **0.6132**.
+- **The relative claim replicates but is marginal.** Consensus beats its pool's best single seed in *both* pools (+0.045, +0.035), and on pool B it beat **all 15** of its own base partitions — it reliably reaches the top of the seed spread. But the margin is **< 1 single-seed std (~0.02)** and shrinks to a tie (+0.008) at 10 seeds; under resampling it isn't guaranteed (worst pool-B leave-one-out 0.571 < B's best single 0.585).
+- **A+B below both pools = regression to the mean, not a bug.** The two pools *agree* strongly (ARI(consensus_A, consensus_B) = 0.84); the pooled co-association matrix is the exact average of the two. Pool A being a lucky outlier, the 10-seed estimate regresses toward the true ~0.61.
+- **More seeds ≠ higher ARI.** Adding seeds gives a more honest, lower-variance estimate and guards against a bad seed; it does **not** raise the number (and lowers it when the starting pool was lucky). Never pick the seed pool that maximizes the reported number.
+
+**Honest claim:** the consensus is deterministic **seed-insurance** — it reliably matches/exceeds the best single seed across independent pools (variance reduction), *not* a method that beats the best seed by a meaningful margin. (`results/consensus_seed_replication.csv`)
+
+### Honest negatives
+
+- **The absolute 0.6504 does not replicate** — it's a 98th-percentile lucky seed pool; an independent pool gives 0.6202 and the 10-seed estimate is 0.6132. The honest claim is *seed-insurance / variance reduction*, not "consensus beats the best seed" (the margin is within seed noise).
+- The **spatial** and **quality-weight twists all score *below* plain consensus** — the pre-registered "twist beats plain" novelty **failed**.
+- The **label-free variant selector picked the *worst*** of the four variants — reported as a negative, not as validation.
+- The pre-registered **"≥5× variance collapse" criterion was missed** (only ~1.2×).
+
+### Honest framing & scope
+
+This is an **application / robustness study**, not a new clustering algorithm. The contributions are (1) a deterministic consensus that **reliably matches the best single seed across independent seed pools** (seed-insurance / variance reduction — *not* a significant ARI gain; the margin is within seed noise and the absolute value is pool-dependent), (2) a label-free **per-spot stability map**, and (3) the attribution ablations. It was stress-tested by **two adversarial workflows** — a 21-finding review and a seed-pool diagnostic that overturned the original "0.6504 beats the best seed" framing into the honest variance-reduction claim above.
+
+**Caveats:** n = 5 seeds, **single tissue section**, **no formal significance test** (gaps are descriptive), and consensus uses 15 base runs vs 1 for a single seed. The highest-value next step is **generalization to ≥3 DLPFC sections** (gene-only, no histology).
+
+### Run it
+
+```bash
+python run_consensus.py     # ~6 min first run; ~1 min on reruns (embeddings cached)
+```
+Requires `leidenalg` + `igraph` for the Leiden base method (`pip install leidenalg igraph`; falls back to KMeans+GMM if absent). **Output:** `results/consensus_ari.csv`, `consensus_perseed.csv`, `stability_consensus.npy`. The consensus math has a standalone, GPU-free self-test: `python consensus_func.py`.
+
+---
+
 ## Reproducibility
 
 - Gate network seed: `torch.manual_seed(42)` in `prepare_features.py`
@@ -321,6 +451,7 @@ The reason: SEDR's reconstruction loss (`rec_w=10`) dominates training. Putting 
 - **Clusterer dependence.** The image-gated graph's small edge appears under KMeans but not under GMM; we report both and conclude a tie. Single-clusterer reporting would have been misleading.
 - **Refinement comparability.** Our refined numbers are not directly comparable to published single-run baselines whose post-processing is unknown.
 - **One foundation model.** Only UNI was tested. A different pathology encoder (CONCH, Virchow, GigaPath) might carry more signal, but the ~0.24 ARI gap to gene-only makes a reversal unlikely.
+- **Part 2 has its own scope.** The [consensus result](#part-2--consensus--robustness) is also single-section (N=1), uses 5 seeds, and has no formal significance test; it is an *application* of evidence-accumulation clustering, not a new algorithm. (The bullets above are about Part 1, the fusion study.)
 
 ---
 
