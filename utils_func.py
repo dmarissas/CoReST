@@ -73,8 +73,23 @@ def cluster_latent(z, n_clusters, seed, method="kmeans"):
                       random_state=seed).fit_predict(z)
     elif method == "gmm":
         from sklearn.mixture import GaussianMixture
-        return GaussianMixture(n_components=n_clusters, covariance_type="full",
-                               n_init=10, random_state=seed).fit_predict(z)
+        # First attempt = the original call, so prior (working) runs are bit-identical.
+        try:
+            return GaussianMixture(n_components=n_clusters, covariance_type="full",
+                                   n_init=10, random_state=seed).fit_predict(z)
+        except (ValueError, np.linalg.LinAlgError):
+            # Some embeddings give a singular/collapsed covariance -> Cholesky
+            # failure (seen on DLPFC). Retry in float64 with a growing reg_covar
+            # (diagonal regularization); use the smallest reg that succeeds.
+            z64 = np.asarray(z, dtype=np.float64)
+            for reg in (1e-5, 1e-4, 1e-3, 1e-2):
+                try:
+                    return GaussianMixture(n_components=n_clusters, covariance_type="full",
+                                           n_init=10, random_state=seed,
+                                           reg_covar=reg).fit_predict(z64)
+                except (ValueError, np.linalg.LinAlgError):
+                    continue
+            raise
     else:
         raise ValueError(f"Unknown clustering method: {method!r}")
 
