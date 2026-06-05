@@ -211,9 +211,10 @@ python visualize.py
 
 > **Part 2 (Consensus / Robustness)** has its own entry point, independent of Steps 4b–5:
 > ```bash
-> python run_consensus.py     # ~6 min first run; ~1 min on reruns (embeddings cached)
+> python run_consensus.py     # HBRC (default); ~6 min first run, ~1 min on reruns (cached)
+> python run_consensus.py --base-dir data/dlpfc_151673 --label-col layer_guess   # another dataset (DLPFC)
 > ```
-> See the [Consensus / Robustness](#part-2--consensus--robustness) section below.
+> See [Consensus / Robustness](#part-2--consensus--robustness) below, and [Running on another dataset (DLPFC generalization)](#running-on-another-dataset-dlpfc-generalization) for the full multi-dataset workflow and which scripts take which flags.
 
 ---
 
@@ -262,6 +263,7 @@ python run_consensus.py     # ~6 min first run; ~1 min on reruns (embeddings cac
 ```
 Builds 15 base partitions (5 seeds × {KMeans, GMM, Leiden} of the gene-only SEDR embedding), the co-association matrix, and the 4 consensus variants; then runs the robustness checks (leave-one-seed-out, bootstrap, all 3/4-seed subsets), the per-spot stability map, and the **source-of-gain ablations** (clusterer-alone / cross-method-only / cross-seed-only + an identity check). Picks the headline variant by a label-free silhouette criterion. Caches per-seed embeddings (`embeddings_consensus_gene_seed*_fine.npy`) so reruns skip SEDR training. Needs `leidenalg`+`igraph` (falls back to KMeans+GMM if missing); the consensus math also has a standalone self-test: `python consensus_func.py`.
 **Output:** `results/consensus_ari.csv` (long format: single-seed / consensus variants / LOSO / bootstrap / seed-subset / ablations), `consensus_perseed.csv`, `stability_consensus.npy`. **Read:** the printed **VERDICT** block — consensus lifts the typical single run and is deterministic (seed-insurance ≈ best-of-pool, label-free); cross-seed pooling is the driver; the twists are honest negatives. (It does *not* reliably beat the *best* seed and ARI is pool-dependent — see `consensus_robustness.py` / Part 2.)
+**Other datasets:** `python run_consensus.py --base-dir data/<dataset> --label-col <gold-col>` (HBRC is the default; for DLPFC use `--base-dir data/dlpfc_151673 --label-col layer_guess`). See [Running on another dataset (DLPFC generalization)](#running-on-another-dataset-dlpfc-generalization).
 
 ### Seed-pool replication — `consensus_seed_replication.py` (Part 2)
 ```bash
@@ -282,6 +284,40 @@ python visualize_consensus.py    # consensus_vs_lottery.png, consensus_gain.png,
 python visualize_robustness.py   # consensus_robustness.png   (Part 2 — the 20-seed reproducibility figure)
 ```
 All read **saved CSVs / `.npy`** (no retraining; `visualize_robustness.py` recomputes the 20 single-seed ARIs from cached embeddings, ~1–2 min). `visualize_ablations.py` turns the graph-experiment and image-study tables into figures; `visualize_consensus.py` plots the seed-lottery scatter, the gain decomposition, and the per-spot stability map; `visualize_robustness.py` plots the "run once vs run-5-and-consensus" clouds + the margin histograms (the reproducibility centerpiece). **Output:** the six PNGs above in `figures/`.
+
+### Running on another dataset (DLPFC generalization)
+
+The Part-2 consensus scripts are **dataset-agnostic**. By default every script runs on HBRC and reproduces the numbers above; to point one at a different prepared dataset (e.g. the DLPFC generalization test) pass two flags — `--base-dir` (the `data/<dataset>/` folder) and `--label-col` (the gold-label column name). **Nothing is tuned** — only *k* changes, and it is auto-derived from the gold standard.
+
+| Script | Flags | Default (no flags) |
+|---|---|---|
+| `prepare_dlpfc.py` | `--dataset <folder>` | `dlpfc_151673` |
+| `run_consensus.py` | `--base-dir`, `--label-col` | HBRC, fine labels |
+| `consensus_robustness.py` | `--base-dir`, `--label-col` | HBRC, `fine_annot_type` |
+| `visualize_consensus.py` | `--base-dir`, `--label-col` | HBRC, `fine_annot_type` |
+| `visualize_robustness.py` | `--base-dir`, `--label-col` | HBRC, `fine_annot_type` |
+| `consensus_seed_replication.py` | *(none — HBRC only)* | HBRC |
+| `visualize_generalization.py` | *(none — reads both)* | HBRC + DLPFC |
+
+**Full DLPFC 151673 workflow** — first place the section's `.h5ad` at `data/dlpfc_151673/151673.h5ad` (any `*.h5ad` in that folder is picked up; source in [DLPFC generalization](#dlpfc-generalization--does-the-recipe-transfer)):
+
+```bash
+# 0. one-time: build processed/ from the .h5ad (gene PCA 200d, layer labels, coords; k auto = 7)
+python prepare_dlpfc.py                                                  # or: --dataset dlpfc_151507
+
+# 1. consensus driver + the 20-seed robustness study, on DLPFC
+python run_consensus.py        --base-dir data/dlpfc_151673 --label-col layer_guess
+python consensus_robustness.py --base-dir data/dlpfc_151673 --label-col layer_guess
+
+# 2. DLPFC Part-2 figures
+python visualize_consensus.py  --base-dir data/dlpfc_151673 --label-col layer_guess
+python visualize_robustness.py --base-dir data/dlpfc_151673 --label-col layer_guess
+
+# 3. cross-tissue HBRC-vs-DLPFC comparison (needs results/ for BOTH datasets)
+python visualize_generalization.py
+```
+
+> **HBRC stays the default everywhere** — running any script with *no flags* reproduces the Part-1/Part-2 HBRC results unchanged. `consensus_seed_replication.py` is HBRC-only (its disjoint seed pools are hard-coded), and `visualize_generalization.py` reads both datasets' `results/` directly, so neither takes flags.
 
 ---
 
@@ -304,6 +340,8 @@ GateST/
 ├── visualize_consensus.py  # Part 2 figures (seed-lottery scatter, gain decomposition, stability map)
 ├── visualize_ablations.py  # Part 1 ablation figures (graph experiment, image-representation study)
 ├── visualize_robustness.py # Part 2: 20-seed reproducibility figure (run-once vs consensus clouds + margins)
+├── prepare_dlpfc.py        # DLPFC generalization: 151673.h5ad → processed/ (gene-only, layer labels, k=7)
+├── visualize_generalization.py # Cross-tissue HBRC-vs-DLPFC robustness comparison figure
 ├── SEDR_model.py           # SEDR training loop (VAE + GNN wrapper)
 ├── graph_func.py           # Spatial + image-gated graph construction
 ├── utils_func.py           # Preprocessing, clustering (KMeans/GMM), spatial refinement
@@ -437,6 +475,23 @@ We then scaled to **20 seeds** and sampled **60 random 5-seed pools** (plus disj
 
 **Honest claim:** the consensus is deterministic **seed-insurance** — it delivers ≈ the **best-of-pool** result **deterministically and label-free** (you cannot pick the best single seed without the gold labels), **lifting a typical run by +0.037 with ~1.4× lower across-pool variance**. It does **not** beat the luckiest seed (≈ coin flip) and is not a hard floor. The value is *label-free, reproducible, above-typical performance* — not a guaranteed win. (`results/consensus_robustness.csv`)
 
+### DLPFC generalization — does the recipe transfer?
+
+We applied the **identical, untuned** pipeline to a second tissue — **DLPFC section `151673`** ([Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0), *Nat. Neurosci.*; distributed via spatialLIBD; 7 cortical layers; gene-only; only *k* changes, auto-derived from the gold standard) — 20 seeds, 60 pools, exactly as HBRC. (`python consensus_robustness.py --base-dir data/dlpfc_151673 --label-col layer_guess`)
+
+> **Data source.** We use the **`151673`** section of the [*Visium DLPFC (preprocessed)*](https://figshare.com/articles/dataset/Visium_DLPFC_preprocessed/22004273) dataset on Figshare (CC BY 4.0) — a single self-contained `.h5ad` (raw counts + `obsm['spatial']` + manual layer labels in `obs['sce.layer_guess']`), repackaged from [Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0) / spatialLIBD. Place it at `data/dlpfc_151673/151673.h5ad`, then run `python prepare_dlpfc.py`.
+
+| | HBRC (k=20) | DLPFC (k=7) | Generalizes? |
+|---|---|---|---|
+| lift over typical run | +0.037 | **+0.068** | ✅ yes (bigger) |
+| deterministic | ✅ | ✅ | ✅ |
+| beats best single seed | 48% (tie) | **83%, p<0.001** | ⚠️ dataset-dependent (DLPFC: a real win) |
+| variance vs single | 1.4× tighter | **0.59× (WIDER)** | ❌ reverses |
+
+**What generalizes:** the **lift over a typical run + determinism** (both tissues; DLPFC even *beats* the best single seed). **What doesn't:** **variance reduction reverses** — DLPFC consensus is *wider*, with a few pools dipping below single seeds. A diagnostic **refuted** a degenerate-cut explanation: the higher DLPFC variance is **intrinsic** (consensus amplifies whatever structure a seed pool shares), not a fixable bug — so no "fix" was shipped.
+
+**Honest cross-tissue claim:** the *deterministic + above-typical-lift* recipe **generalizes**; the *variance behaviour is dataset-dependent*. The pipeline was applied **untuned** (only k differs); numbers are internal with refinement applied to all conditions — a **reproducibility study, not a SOTA ARI claim**. (Cross-tissue figure: `python visualize_generalization.py` → `generalization_hbrc_vs_dlpfc.png`.)
+
 ### Honest negatives
 
 - **The absolute 0.6504 does not replicate** — it's a 98th-percentile lucky seed pool; an independent pool gives 0.6202 and the 10-seed estimate is 0.6132. The honest claim is *seed-insurance / variance reduction*, not "consensus beats the best seed."
@@ -499,5 +554,6 @@ If you use this code, please cite:
 - [SEDR](https://github.com/JinmiaoChenLab/SEDR) — base spatial GNN model (Li et al.)
 - [UNI](https://huggingface.co/MahmoodLab/uni) — pathology foundation model (Chen et al., 2024)
 - [Xu et al. 2022](https://doi.org/10.1038/s41592-022-01494-7) — HBRC gold standard annotations
+- [Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0) — DLPFC dataset & cortical-layer annotations (*Nat. Neurosci.*); we use section `151673` from the preprocessed [Visium DLPFC on Figshare](https://figshare.com/articles/dataset/Visium_DLPFC_preprocessed/22004273) (CC BY 4.0)
 - [TGR-NMF](https://academic.oup.com/bib/article/26/1/bbae707/7945615) — published baseline (Li et al., 2024)
 - [Brussee et al. 2024](https://arxiv.org/abs/2406.12808) — GNN in histopathology review

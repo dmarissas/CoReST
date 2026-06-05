@@ -63,20 +63,24 @@ def _sign_p_greater(k, n):
         return float(binom_test(k, n, 0.5, alternative="greater"))
 
 
-def main():
+def main(base_dir=BASE_DIR, label_col="fine_annot_type"):
+    proc_dir   = os.path.join(base_dir, "processed")
+    result_dir = os.path.join(base_dir, "results")
+    os.makedirs(result_dir, exist_ok=True)
     print("=" * 66)
     print("CONSENSUS ROBUSTNESS STUDY — reproducibility across seed pools")
     print("=" * 66)
-    print(f"Device: {DEVICE}   total seeds: {len(ALL_SEEDS)}  "
-          f"(cached {len(SEEDS_CACHED)} + new {len(SEEDS_NEW)})   pool size: {POOL_SIZE}")
+    print(f"Device: {DEVICE}   dataset: {os.path.basename(base_dir)}   label: {label_col}")
+    print(f"total seeds: {len(ALL_SEEDS)}   pool size: {POOL_SIZE}")
 
-    barcodes = pd.read_csv(os.path.join(PROC_DIR, "barcodes_final.csv"))["barcode"].tolist()
-    labels   = pd.read_csv(os.path.join(PROC_DIR, "labels_final.csv"), index_col="barcode")
-    coords   = pd.read_csv(os.path.join(PROC_DIR, "coords_final.csv"), index_col="barcode")
-    gold = labels.loc[barcodes, "fine_annot_type"].values
+    barcodes = pd.read_csv(os.path.join(proc_dir, "barcodes_final.csv"))["barcode"].tolist()
+    labels   = pd.read_csv(os.path.join(proc_dir, "labels_final.csv"), index_col="barcode")
+    coords   = pd.read_csv(os.path.join(proc_dir, "coords_final.csv"), index_col="barcode")
+    gold = labels.loc[barcodes, label_col].values
     xy   = coords.loc[barcodes, ["x", "y"]].values
-    gene_feats = np.load(os.path.join(PROC_DIR, "gene_only.npy"))
+    gene_feats = np.load(os.path.join(proc_dir, "gene_only.npy"))
     K = len(np.unique(gold))
+    print(f"spots: {len(barcodes)}   gold k={K}")
 
     adata_g = sc.AnnData(X=gene_feats)
     adata_g.obsm["spatial"] = xy
@@ -91,7 +95,7 @@ def main():
     print("\n[1] Per-seed embeddings (cached reused; new seeds train) + base partitions")
     parts_by_seed, single_ari = {}, {}
     for s in ALL_SEEDS:
-        cache = os.path.join(RESULT_DIR, f"embeddings_consensus_gene_seed{s}_fine.npy")
+        cache = os.path.join(result_dir, f"embeddings_consensus_gene_seed{s}_fine.npy")
         if os.path.exists(cache):
             z = np.load(cache)
             tag = "cache"
@@ -167,8 +171,7 @@ def main():
         "mean_margin_vs_mean": float(pdf["margin_vs_mean"].mean()),
     }
 
-    os.makedirs(RESULT_DIR, exist_ok=True)
-    pdf.to_csv(os.path.join(RESULT_DIR, "consensus_robustness_pools.csv"), index=False)
+    pdf.to_csv(os.path.join(result_dir, "consensus_robustness_pools.csv"), index=False)
     pd.DataFrame([{
         "n_seeds": len(ALL_SEEDS), "pool_size": POOL_SIZE, "n_random_pools": len(cons_vals),
         "single_mean": round(s_mean, 4), "single_std": round(s_std, 4),
@@ -179,10 +182,10 @@ def main():
         "consensus_floor_ge_single_mean": floor_beats_single_mean,
         "pools_ge_best_single": f"{n_ge_best}/{len(pdf)}", "sign_test_p": round(p_sign, 4),
         "disjoint_pools_ge_best": f"{n_disj_ge}/{len(disj)}",
-    }]).to_csv(os.path.join(RESULT_DIR, "consensus_robustness.csv"), index=False)
+    }]).to_csv(os.path.join(result_dir, "consensus_robustness.csv"), index=False)
 
     # ── Verdict ──
-    print(f"\n{'='*66}\nROBUSTNESS VERDICT (fine k=20, refined ARI)\n{'='*66}")
+    print(f"\n{'='*66}\nROBUSTNESS VERDICT (k={K}, refined ARI)\n{'='*66}")
     print(f"  'run once'  (single seed, n={len(single_vals)}): "
           f"mean {s_mean:.4f}  std {s_std:.4f}  range [{s_min:.4f}, {s_max:.4f}]")
     print(f"  'run {POOL_SIZE}+consensus' (n={len(cons_vals)} pools): "
@@ -203,4 +206,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Consensus robustness study. Defaults to HBRC; pass --base-dir/--label-col for DLPFC etc.")
+    ap.add_argument("--base-dir", default=BASE_DIR,
+                    help="dataset dir with processed/ (default: HBRC). e.g. data/dlpfc_151673")
+    ap.add_argument("--label-col", default="fine_annot_type",
+                    help="gold label column (HBRC: fine_annot_type; DLPFC: layer_guess)")
+    args = ap.parse_args()
+    bd = args.base_dir if os.path.isabs(args.base_dir) else os.path.join(CODE_DIR, args.base_dir)
+    main(base_dir=bd, label_col=args.label_col)

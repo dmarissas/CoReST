@@ -108,20 +108,25 @@ def leiden_partition(z, seed, resolution=LEIDEN_RES):
         return None
 
 
-def main():
+def main(base_dir=BASE_DIR, label_col=None):
+    proc_dir   = os.path.join(base_dir, "processed")
+    result_dir = os.path.join(base_dir, "results")
+    os.makedirs(result_dir, exist_ok=True)
+    if label_col is None:
+        label_col = "fine_annot_type" if RESOLUTION == "fine" else "annot_type"
     print("=" * 64)
     print("CONSENSUS / ROBUSTNESS — SEDR spatial-domain identification")
     print("=" * 64)
-    print(f"Device : {DEVICE}   Seeds: {SEEDS}   Resolution: {RESOLUTION}")
+    print(f"Device : {DEVICE}   dataset: {os.path.basename(base_dir)}   "
+          f"label: {label_col}   Seeds: {SEEDS}")
 
     # ── Load aligned data ──────────────────────────────────────────
-    barcodes = pd.read_csv(os.path.join(PROC_DIR, "barcodes_final.csv"))["barcode"].tolist()
-    labels   = pd.read_csv(os.path.join(PROC_DIR, "labels_final.csv"), index_col="barcode")
-    coords   = pd.read_csv(os.path.join(PROC_DIR, "coords_final.csv"), index_col="barcode")
-    label_col = "fine_annot_type" if RESOLUTION == "fine" else "annot_type"
+    barcodes = pd.read_csv(os.path.join(proc_dir, "barcodes_final.csv"))["barcode"].tolist()
+    labels   = pd.read_csv(os.path.join(proc_dir, "labels_final.csv"), index_col="barcode")
+    coords   = pd.read_csv(os.path.join(proc_dir, "coords_final.csv"), index_col="barcode")
     gold = labels.loc[barcodes, label_col].values
     xy   = coords.loc[barcodes, ["x", "y"]].values
-    gene_feats = np.load(os.path.join(PROC_DIR, "gene_only.npy"))
+    gene_feats = np.load(os.path.join(proc_dir, "gene_only.npy"))
     K = len(np.unique(gold))
     print(f"Spots: {len(barcodes)}   gold k={K}   gene dim={gene_feats.shape[1]}")
 
@@ -134,7 +139,7 @@ def main():
     print("\n[1] Per-seed gene-only SEDR embeddings (cached on disk)")
     embeddings = []
     for s in SEEDS:
-        cache = os.path.join(RESULT_DIR, f"embeddings_consensus_gene_seed{s}_{RESOLUTION}.npy")
+        cache = os.path.join(result_dir, f"embeddings_consensus_gene_seed{s}_{RESOLUTION}.npy")
         if os.path.exists(cache):
             z = np.load(cache)
             print(f"    seed={s}: loaded cache  {z.shape}")
@@ -219,7 +224,7 @@ def main():
             rows.append({"approach": f"consensus_{name}", "refine": tag,
                          "ARI_mean": round(a, 4), "ARI_std": 0.0,
                          "ARI_best": round(a, 4), "ARI_worst": round(a, 4), "n": 1})
-            np.save(os.path.join(RESULT_DIR,
+            np.save(os.path.join(result_dir,
                     f"clusters_consensus_{name}_k{K}{'_refined' if tag=='refined' else ''}.npy"),
                     pred)
             print(f"    consensus_{name:<8} {tag:<7} ARI={a:.4f}  (k_found={len(np.unique(pred))})")
@@ -293,7 +298,7 @@ def main():
     print("\n[5] Per-spot stability map")
     cons_head = consensus_labels_store["headline"][0]
     sm = stability_map(C_plain, cons_head, partitions=base_parts)
-    np.save(os.path.join(RESULT_DIR, "stability_consensus.npy"),
+    np.save(os.path.join(result_dir, "stability_consensus.npy"),
             np.column_stack([sm["confidence"], sm["stability"]]))
     print(f"    mean co-association confidence={sm['confidence'].mean():.4f}  "
           f"mean stability(1-entropy)={sm['stability'].mean():.4f}")
@@ -359,9 +364,9 @@ def main():
 
     # ── Save tables + verdict ───────────────────────────────────────
     df = pd.DataFrame(rows)
-    df.to_csv(os.path.join(RESULT_DIR, "consensus_ari.csv"), index=False)
+    df.to_csv(os.path.join(result_dir, "consensus_ari.csv"), index=False)
     perseed_df = pd.DataFrame([r for recs in per_seed.values() for r in recs])
-    perseed_df.to_csv(os.path.join(RESULT_DIR, "consensus_perseed.csv"), index=False)
+    perseed_df.to_csv(os.path.join(result_dir, "consensus_perseed.csv"), index=False)
 
     print(f"\n{'='*64}\nSUMMARY  (resolution={RESOLUTION}, k={K})\n{'='*64}")
     print(df.to_string(index=False))
@@ -397,6 +402,28 @@ def main():
     wt_ari    = adjusted_rand_score(gold, consensus_labels_store["weighted"][1])
     sp_ari    = adjusted_rand_score(gold, consensus_labels_store["spatial"][1])
     loso_ratio = (typ_std / loso.std()) if loso.std() > 1e-9 else float("inf")
+    loso_min = float(loso.min())
+    # data-driven comparators. These strings used to be hard-coded for HBRC and
+    # printed FALSE claims on datasets where the relation flips (e.g. DLPFC, where
+    # the LOSO worst dips below the best seed and a twist edges plain by noise).
+    twist_aris = {"weighted": wt_ari, "spatial": sp_ari, "headline": head_ari}
+    best_twist = max(twist_aris, key=twist_aris.get)
+    twist_margin = twist_aris[best_twist] - plain_ari
+    if twist_margin <= 0:
+        twist_msg = "ALL below plain (honest negative)"
+    elif twist_margin < typ_std:
+        twist_msg = (f"about-equal to plain (best twist '{best_twist}' +{twist_margin:.4f} "
+                     f"is within seed noise {typ_std:.4f} -> NOT a real win)")
+    else:
+        twist_msg = (f"'{best_twist}' BEATS plain by +{twist_margin:.4f} "
+                     f"(> seed noise {typ_std:.4f})")
+    n_clear = sum(1 for v in (plain_ari, wt_ari, sp_ari, head_ari) if v >= best_single - 1e-9)
+    loso_rel = "still beats" if loso_min > best_single else "dips below"
+    if loso_min > best_single:
+        rob_claim = f"distribution-dominance (LOSO worst {loso_min:.4f} > single best {best_single:.4f})"
+    else:
+        rob_claim = (f"determinism + above-typical lift (LOSO worst {loso_min:.4f} dips below "
+                     f"single best {best_single:.4f} on this dataset -> NO distribution-dominance)")
 
     print(f"\n{'-'*64}\nVERDICT (refined ARI)\n{'-'*64}")
     print(f"  HEADLINE  plain consensus           : {plain_ari:.4f}  (deterministic, label-free)")
@@ -405,13 +432,14 @@ def main():
     print(f"  gain decomposition over GMM mean {gmm_mean:.4f}:")
     print(f"     + cross-SEED pooling (GMM only)  : {xseed_gmm:.4f}  (+{xseed_gmm-gmm_mean:.4f}, primary driver)")
     print(f"     + cross-method (-> full plain)   : {plain_ari:.4f}  (+{plain_ari-xseed_gmm:.4f}, the rest)")
-    print(f"  twists are ALL below plain (honest negative): "
-          f"weighted {wt_ari:.4f}  spatial {sp_ari:.4f}  headline {head_ari:.4f}")
+    print(f"  twists vs plain: {twist_msg}  "
+          f"[weighted {wt_ari:.4f}  spatial {sp_ari:.4f}  headline {head_ari:.4f}]")
     print(f"  label-free selector chose '{selected}' (ARI {sel_ari:.4f}) "
           f"— it did NOT pick the best; reported as a NEGATIVE, not a win")
     print(f"\n  ROBUSTNESS:")
     print(f"   determinism : consensus = ONE fixed answer (rerun std 0; a single seed had std {typ_std:.4f})")
-    print(f"   seed-choice : worst 4-seed (LOSO) consensus {loso.min():.4f} > best single seed {best_single:.4f}")
+    print(f"   seed-choice : worst 4-seed (LOSO) consensus {loso_min:.4f} {loso_rel} "
+          f"the best single seed {best_single:.4f}")
     print(f"   stress test : bootstrap worst {boot.min():.4f} dips below GMM mean "
           f"-> robust to seed choice, NOT to dropping a whole clusterer")
     print(f"\n  CAVEATS (honesty): n=5 seeds, SINGLE section, NO significance test "
@@ -419,12 +447,21 @@ def main():
     print(f"\nSUCCESS CRITERIA (pre-registered):")
     print(f"  (1) consensus >= best single seed   : "
           f"{'YES' if plain_ari >= best_single - 1e-9 else 'NO'}  "
-          f"(ALL 4 variants clear it: plain {plain_ari:.4f} .. headline {head_ari:.4f} vs {best_single:.4f})")
-    print(f"  (2) >=5x variance collapse          : NO ({loso_ratio:.1f}x).  Honest robustness "
-          f"claim = distribution-dominance (LOSO worst {loso.min():.4f} > single best {best_single:.4f}), "
-          f"not a 5x std drop")
+          f"({n_clear}/4 variants clear it: plain {plain_ari:.4f}, weighted {wt_ari:.4f}, "
+          f"spatial {sp_ari:.4f}, headline {head_ari:.4f} vs {best_single:.4f})")
+    print(f"  (2) >=5x variance collapse          : NO ({loso_ratio:.1f}x).  "
+          f"Honest robustness claim = {rob_claim}, not a 5x std drop")
     print(f"\nSaved: results/consensus_ari.csv, results/consensus_perseed.csv")
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Consensus driver. Default HBRC; pass --base-dir/--label-col for DLPFC etc.")
+    ap.add_argument("--base-dir", default=BASE_DIR,
+                    help="dataset dir with processed/ (default: HBRC). e.g. data/dlpfc_151673")
+    ap.add_argument("--label-col", default=None,
+                    help="gold label column (default: fine_annot_type; DLPFC: layer_guess)")
+    args = ap.parse_args()
+    bd = args.base_dir if os.path.isabs(args.base_dir) else os.path.join(CODE_DIR, args.base_dir)
+    main(base_dir=bd, label_col=args.label_col)
