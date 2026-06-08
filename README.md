@@ -12,7 +12,7 @@
 Two connected investigations on the same SEDR pipeline and dataset:
 
 - **Part 1 — Gated multimodal fusion** *(histology + genes)* — an **honest negative**: *where* you fuse matters (feature fusion hurts, graph fusion ties), but UNI histology adds **no robust gain** over genes on this section. → [Overview](#overview), [Results](#results).
-- **Part 2 — Consensus / robustness** *(current direction)* — a deterministic cross-seed + cross-method **consensus** of SEDR embeddings that **tames the random-seed lottery**. Across 20 seeds it **lifts a typical single run by +0.037** (0.549 → 0.586) with **~1.4× lower variance**, deterministically and **label-free** (≈ the best-of-pool result, which you otherwise couldn't pick without the answer key). Honest scope: it does **not** reliably beat the *best* single seed (≈ coin flip) and the absolute ARI is pool-dependent — the value is **reproducible, above-typical, label-free** performance, not a guaranteed win. → [Part 2 — Consensus / Robustness](#part-2--consensus--robustness).
+- **Part 2 — Consensus / robustness** *(current direction)* — a deterministic cross-seed + cross-method **consensus** of SEDR embeddings that **tames the random-seed lottery**. Across 20 seeds it **lifts a typical single run by +0.037** (0.549 → 0.586) with **~1.4× lower variance**, deterministically and **label-free** (≈ the best-of-pool result, which you otherwise couldn't pick without the answer key). Honest scope: it does **not** reliably beat the *best* single seed (≈ coin flip) and the absolute ARI is pool-dependent — the value is **reproducible, above-typical, label-free** performance, not a guaranteed win. Tested across **4 datasets** (breast + 3 cortex donors): the deterministic, above-typical lift transfers, but variance-reduction and beating-the-best-seed are **dataset-dependent**. → [Part 2 — Consensus / Robustness](#part-2--consensus--robustness).
 
 ---
 
@@ -477,20 +477,24 @@ We then scaled to **20 seeds** and sampled **60 random 5-seed pools** (plus disj
 
 ### DLPFC generalization — does the recipe transfer?
 
-We applied the **identical, untuned** pipeline to a second tissue — **DLPFC section `151673`** ([Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0), *Nat. Neurosci.*; distributed via spatialLIBD; 7 cortical layers; gene-only; only *k* changes, auto-derived from the gold standard) — 20 seeds, 60 pools, exactly as HBRC. (`python consensus_robustness.py --base-dir data/dlpfc_151673 --label-col layer_guess`)
+We applied the **identical, untuned** pipeline to a second tissue type — **three DLPFC cortex sections, one per donor**: `151673` (donor 3), `151507` (donor 1), `151669` (donor 2) ([Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0), *Nat. Neurosci.*; via spatialLIBD; gene-only; only *k* changes, auto-derived from the gold standard — 7 layers for 151673/151507, **5 for 151669** which lacks the superficial layers). 20 seeds × 60 pools each, exactly as HBRC. Picking one section **per donor** (not adjacent slices of the same brain, which are near-replicates) tests transfer **across cortex donors**, not just within one brain.
 
-> **Data source.** We use the **`151673`** section of the [*Visium DLPFC (preprocessed)*](https://figshare.com/articles/dataset/Visium_DLPFC_preprocessed/22004273) dataset on Figshare (CC BY 4.0) — a single self-contained `.h5ad` (raw counts + `obsm['spatial']` + manual layer labels in `obs['sce.layer_guess']`), repackaged from [Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0) / spatialLIBD. Place it at `data/dlpfc_151673/151673.h5ad`, then run `python prepare_dlpfc.py`.
+> **Data source.** Sections `151673`, `151507`, `151669` of the [*Visium DLPFC (preprocessed)*](https://figshare.com/articles/dataset/Visium_DLPFC_preprocessed/22004273) dataset on Figshare (CC BY 4.0) — self-contained `.h5ad` files (raw counts + `obsm['spatial']` + manual layer labels in `obs['sce.layer_guess']`), repackaged from [Maynard et al. 2021](https://www.nature.com/articles/s41593-020-00787-0) / spatialLIBD. Place each at `data/dlpfc_<id>/<id>.h5ad`, then `python prepare_dlpfc.py --dataset dlpfc_<id>`.
 
-| | HBRC (k=20) | DLPFC (k=7) | Generalizes? |
-|---|---|---|---|
-| lift over typical run | +0.037 | **+0.068** | ✅ yes (bigger) |
-| deterministic | ✅ | ✅ | ✅ |
-| beats best single seed | 48% (tie) | **83%, p<0.001** | ⚠️ dataset-dependent (DLPFC: a real win) |
-| variance vs single | 1.4× tighter | **0.59× (WIDER)** | ❌ reverses |
+| Dataset (donor) | k | single run | run-5 + consensus | lift | variance | vs best-of-pool |
+|---|---|---|---|---|---|---|
+| HBRC breast | 20 | 0.549 ± 0.033 | 0.586 ± 0.023 | +0.037 | **1.4× tighter** | ties (29/60) |
+| DLPFC 151673 (D3) | 7 | 0.550 ± 0.023 | 0.618 ± 0.039 | **+0.068** | 0.59× wider | **beats (50/60)** |
+| DLPFC 151507 (D1) | 7 | 0.477 ± 0.053 | 0.511 ± 0.009 | +0.034 | **6.2× tighter** | below (11/60) |
+| DLPFC 151669 (D2) | 5 | 0.363 ± 0.051 | 0.370 ± 0.085 | +0.007 | 0.61× wider | below (8/60) |
 
-**What generalizes:** the **lift over a typical run + determinism** (both tissues; DLPFC even *beats* the best single seed). **What doesn't:** **variance reduction reverses** — DLPFC consensus is *wider*, with a few pools dipping below single seeds. A diagnostic **refuted** a degenerate-cut explanation: the higher DLPFC variance is **intrinsic** (consensus amplifies whatever structure a seed pool shares), not a fixable bug — so no "fix" was shipped.
+**Scorecard across all 4 datasets:** lift > 0 on **4/4** (but +0.007 → +0.068) · deterministic on **4/4** · variance tighter on **2/4** (HBRC, 151507), wider on **2/4** (151673, 151669) · beats best-of-pool on **1/4** (151673), ties 1/4 (HBRC), below 2/4.
 
-**Honest cross-tissue claim:** the *deterministic + above-typical-lift* recipe **generalizes**; the *variance behaviour is dataset-dependent*. The pipeline was applied **untuned** (only k differs); numbers are internal with refinement applied to all conditions — a **reproducibility study, not a SOTA ARI claim**. (Cross-tissue figure: `python visualize_generalization.py` → `generalization_hbrc_vs_dlpfc.png`.)
+**What generalizes (robust on all 4):** (1) **determinism** — one fixed answer every time; (2) a **non-negative lift over a typical single run** — consensus is ≥ a typical run everywhere, though the margin shrinks to a negligible +0.007 on the low-signal k=5 section 151669. **What does NOT generalize:** (1) **variance reduction** — *tighter* on 2/4 (151507 dramatically so, 6.2×) but *wider* on 2/4; a diagnostic refuted a degenerate-cut explanation for the wider sections → the extra variance is **intrinsic** (consensus amplifies whatever structure a seed pool shares), not a fixable bug. (2) **beating the best single seed** — only 151673 does it; the other two cortex sections sit *below* their pool's best seed.
+
+**The N=4 correction (honesty in action):** at N=2, DLPFC 151673 made *"consensus beats the best seed on brain tissue"* look like a finding. Adding two more cortex sections from **different donors exposed that as 151673-specific** — neither of the others beats the best seed. Expanding the test **shrank the claim**, exactly as it should.
+
+**Honest cross-tissue claim (N=4):** what transfers is **deterministic, label-free, at-least-typical performance** (*seed-insurance*) — **not** a guaranteed variance reduction and **not** beating the luckiest seed. `151507` is the clean seed-insurance case (6.2× tighter, +0.034 above typical, but below the lucky best seed); `151669` is the cautionary case (low-signal k=5 section → negligible lift, wider). Applied **untuned** (only k differs, auto from gold); numbers are internal with refinement on all conditions — a **reproducibility study, not a SOTA ARI claim**. (Cross-tissue figure: `python visualize_generalization.py` → `generalization_across_datasets.png`; one panel per dataset.)
 
 ### Honest negatives
 
@@ -502,9 +506,9 @@ We applied the **identical, untuned** pipeline to a second tissue — **DLPFC se
 
 ### Honest framing & scope
 
-This is an **application / robustness study**, not a new clustering algorithm. The contributions are (1) a deterministic consensus that delivers ≈ the **best-of-pool** result **label-free** — lifting a typical single run by **+0.037** with **~1.4× lower across-pool variance** (seed-insurance), though it does **not** beat the *best* single seed (≈ coin flip at 20 seeds), (2) a label-free **per-spot stability map**, and (3) the attribution ablations. It was stress-tested by **two adversarial workflows + a 20-seed robustness study** that successively corrected the claim from "0.6504 beats the best seed" → "≈ best-of-pool, label-free, +0.037 over a typical run."
+This is an **application / robustness study**, not a new clustering algorithm. The contributions are (1) a deterministic consensus that delivers ≈ the **best-of-pool** result **label-free** — lifting a typical single run by **+0.037** with **~1.4× lower across-pool variance** (seed-insurance), though it does **not** beat the *best* single seed (≈ coin flip at 20 seeds), (2) a label-free **per-spot stability map**, and (3) the attribution ablations. It was stress-tested by **two adversarial workflows + a 20-seed robustness study** that successively corrected the claim from "0.6504 beats the best seed" → "≈ best-of-pool, label-free, +0.037 over a typical run." A later **4-dataset generalization test** (3 DLPFC cortex sections across donors) corrected it once more: *beating the best seed does **not** generalize* (it was 151673-specific) — only the deterministic, at-least-typical *seed-insurance* does.
 
-**Caveats:** n = 5 seeds, **single tissue section**, **no formal significance test** (gaps are descriptive), and consensus uses 15 base runs vs 1 for a single seed. The highest-value next step is **generalization to ≥3 DLPFC sections** (gene-only, no histology).
+**Caveats:** 5 base seeds (20 for the robustness study), **no formal significance test on within-dataset gaps** (the per-pool sign tests are descriptive), and consensus pools 15 base runs vs 1 for a single seed. Generalization now spans **4 datasets** (1 breast + 3 cortex across 3 donors) — enough to show the recipe transfers, but it also **shrinks** the claim (variance-reduction and beating-the-best-seed are dataset-dependent). The next step is broader **tissue diversity** beyond breast + cortex.
 
 ### Run it
 
@@ -530,7 +534,7 @@ Requires `leidenalg` + `igraph` for the Leiden base method (`pip install leidena
 - **Clusterer dependence.** The image-gated graph's small edge appears under KMeans but not under GMM; we report both and conclude a tie. Single-clusterer reporting would have been misleading.
 - **Refinement comparability.** Our refined numbers are not directly comparable to published single-run baselines whose post-processing is unknown.
 - **One foundation model.** Only UNI was tested. A different pathology encoder (CONCH, Virchow, GigaPath) might carry more signal, but the ~0.24 ARI gap to gene-only makes a reversal unlikely.
-- **Part 2 has its own scope.** The [consensus result](#part-2--consensus--robustness) is also single-section (N=1), uses 5 seeds, and has no formal significance test; it is an *application* of evidence-accumulation clustering, not a new algorithm. (The bullets above are about Part 1, the fusion study.)
+- **Part 2 has its own scope.** The [consensus result](#part-2--consensus--robustness) now spans **4 datasets** (1 breast + 3 DLPFC cortex sections across 3 donors) over 20 seeds, but has **no formal significance test on within-dataset gaps**; it is an *application* of evidence-accumulation clustering, not a new algorithm. Generalization is partial — variance-reduction and beating-the-best-seed are dataset-dependent. (The bullets above are about Part 1, the fusion study.)
 
 ---
 
