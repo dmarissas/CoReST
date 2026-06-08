@@ -544,7 +544,7 @@ If you use this code, please cite:
 
 ```bibtex
 @misc{GateST2025,
-  author = {Delfina Amarissa Sumanang},
+  author = {Delfina Amarissa Sumanang, Frederick Halim, Lui Kirtan, Cheng-Hsi Cheng, Lien-Yun Yang},
   title  = {GateST: Gated Multimodal Fusion for Spatial Transcriptomics Domain Identification},
   year   = {2026},
   url    = {https://github.com/dmarissas/GateST}
