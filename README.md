@@ -1,11 +1,13 @@
-# GateST: Gated Multimodal Fusion for Spatial Transcriptomics
+# CoReST: Reproducible Spatial-Domain Identification via Cross-Seed Consensus
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> Spatial tissue-domain identification on Visium data — **two honest studies** on one SEDR pipeline:
-> 1. **Gated multimodal fusion** of UNI histology + gene expression *(an honest negative)*.
-> 2. **A consensus / robustness method** that removes SEDR's random-seed lottery *(seed-insurance)*.
+> **CoReST** = **Co**nsensus for **Re**producible **S**patial **T**ranscriptomics — reproducible tissue-domain identification on Visium data, **two honest studies** on one SEDR backbone:
+> 1. **Gated multimodal fusion** of UNI histology + gene expression — an honest *negative* (where you fuse matters; image adds no robust gain).
+> 2. **Cross-seed consensus** that removes SEDR's random-seed lottery — deterministic, label-free *seed-insurance* **(the current focus)**.
+>
+> *(Project formerly **GateST**, named after Part 1's **Gate**d fusion. GitHub repo: [`dmarissas/GateST`](https://github.com/dmarissas/GateST).)*
 
 ---
 
@@ -93,7 +95,7 @@ data/dlpfc_151669/151669.h5ad      # donor 2, k=5 (lacks superficial Layers 1–
 
 ## Overview
 
-GateST fuses two modalities and asks **where** fusion should happen:
+Part 1 fuses two modalities and asks **where** fusion should happen:
 
 - **Gene features** — 200d PCA from 2000 highly-variable genes (standard SEDR preprocessing).
 - **Histology features** — multi-scale UNI embeddings (3×1024d → 256d PCA) from H&E patches.
@@ -356,7 +358,7 @@ python visualize_generalization.py                        # → generalization_a
 
 ## Experiments & Ablations
 
-All scripts run in the `GateST` env after Steps 1–3 have populated `processed/`. Each reads/writes under `data/<dataset>/{results,figures}`.
+All scripts run in the project's conda environment after Steps 1–3 have populated `processed/`. Each reads/writes under `data/<dataset>/{results,figures}`.
 
 | Script | What it does | Key output |
 |---|---|---|
@@ -420,10 +422,8 @@ GateST/
 ├── visualize_generalization.py # Part 2 generalization: cross-dataset figure
 ├── SEDR_model.py · SEDR_module.py · graph_func.py · utils_func.py   # SEDR backbone + helpers
 ├── figures/                    # committed copies of key figures (this README cites these)
-├── requirements.txt · README.md · CODE_EXPLANATION.md
+├── requirements.txt · README.md
 ```
-
-See [CODE_EXPLANATION.md](CODE_EXPLANATION.md) for a per-file, design-level walkthrough of both parts.
 
 ---
 
@@ -438,7 +438,7 @@ See [CODE_EXPLANATION.md](CODE_EXPLANATION.md) for a per-file, design-level walk
 ## Limitations & honest scope
 
 - **Part 1 is a single section.** Findings (feature fusion hurts, graph fusion ties, no robust image gain) are HBRC-only and may differ where morphology is more domain-discriminative.
-- **Part 1 is a negative/methods result, not SOTA.** GateST does not beat gene-only by adding histology.
+- **Part 1 is a negative/methods result, not SOTA.** The fusion study does not beat gene-only by adding histology.
 - **Clusterer dependence.** The image-gated graph's edge appears under KMeans but not GMM; we report both and conclude a tie.
 - **One foundation model.** Only UNI tested; the ~0.24 ARI gap makes a reversal from a different encoder unlikely.
 - **Part 2 is an application, generalization is partial.** 4 datasets (1 breast + 3 cortex donors), 20 seeds, no formal significance test on within-dataset gaps. Variance-reduction and beating-the-best-seed are **dataset-dependent**; only determinism + at-least-typical lift transfer. Next step: broader **tissue diversity** beyond breast + cortex.
@@ -448,9 +448,9 @@ See [CODE_EXPLANATION.md](CODE_EXPLANATION.md) for a per-file, design-level walk
 ## Citation
 
 ```bibtex
-@misc{GateST2025,
+@misc{CoReST2026,
   author = {Delfina Amarissa Sumanang, Frederick Halim, Lui Kirtan, Cheng-Hsi Cheng, Lien-Yun Yang},
-  title  = {GateST: Gated Multimodal Fusion for Spatial Transcriptomics Domain Identification},
+  title  = {CoReST: Reproducible Spatial-Domain Identification via Cross-Seed Consensus},
   year   = {2026},
   url    = {https://github.com/dmarissas/GateST}
 }
