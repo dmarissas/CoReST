@@ -451,7 +451,7 @@ GateST/
   author = {Delfina Amarissa Sumanang, Frederick Halim, Lui Kirtan, Cheng-Hsi Cheng, Lien-Yun Yang},
   title  = {CoReST: Reproducible Spatial-Domain Identification via Cross-Seed Consensus},
   year   = {2026},
-  url    = {https://github.com/dmarissas/GateST}
+  url    = {https://github.com/dmarissas/CoReST}
 }
 ```
 
