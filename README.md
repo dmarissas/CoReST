@@ -7,7 +7,6 @@
 > 1. **Gated multimodal fusion** of UNI histology + gene expression — an honest *negative* (where you fuse matters; image adds no robust gain).
 > 2. **Cross-seed consensus** that removes SEDR's random-seed lottery — deterministic, label-free *seed-insurance* **(the current focus)**.
 >
-> *(Project formerly **GateST**, named after Part 1's **Gate**d fusion. GitHub repo: [`dmarissas/GateST`](https://github.com/dmarissas/GateST).)*
 
 ---
 
